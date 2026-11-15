@@ -1092,19 +1092,32 @@ const Eyes = {
   },
 };
 
-// ---------------------------------------------------------------- cheveux (calotte MakeHuman) & barbe (coque suivant la peau)
+// ---------------------------------------------------------------- cheveux 3D (mèches) & barbe
+// Chaque coiffure = une sous-couche colorée (cuir chevelu couvert) + des milliers de mèches en rubans texturés,
+// poussées depuis le cuir chevelu, coiffées (sens, gravité, boucles) et tenues hors de la tête et des épaules.
+const HAIR_STYLES = {
+  rase: { label: 'Rasés', strands: 0, shell: 0.0009 },
+  court: { label: 'Courts', strands: 3200, len: 0.024, hug: 0.8, comb: 'back', gravity: 0.25, lift: 0.3, curl: 0.15, width: 0.006, shell: 0.0025 },
+  degrade: { label: 'Dégradé (fade)', strands: 3000, len: 0.034, hug: 0.75, comb: 'back', gravity: 0.15, lift: 0.4, curl: 0.1, width: 0.006, shell: 0.0018, fade: true },
+  plaque: { label: 'Coiffés en arrière', strands: 3200, len: 0.075, hug: 0.95, comb: 'back', gravity: 0.35, lift: 0.12, curl: 0.05, width: 0.007, shell: 0.003 },
+  boucles: { label: 'Bouclés', strands: 3200, len: 0.05, hug: 0.35, comb: 'radial', gravity: 0.1, lift: 0.8, curl: 1.2, width: 0.008, shell: 0.004 },
+  milong: { label: 'Mi-longs', strands: 3400, len: 0.15, hug: 0.9, comb: 'part', gravity: 1.2, lift: 0.3, curl: 0.12, width: 0.008, shell: 0.003 },
+  long: { label: 'Longs', strands: 3800, len: 0.34, hug: 0.9, comb: 'part', gravity: 1.6, lift: 0.25, curl: 0.15, width: 0.009, shell: 0.003 },
+  chignon: { label: 'Chignon', strands: 3000, len: 0.09, hug: 0.97, comb: 'bun', gravity: 0.0, lift: 0.08, curl: 0.05, width: 0.007, shell: 0.003, bun: true },
+};
 const Hair = {
-  hair: null, nape: null, beard: null,
-  rebuild() {
-    for (const kk of ['hair', 'nape', 'beard']) if (this[kk]) { Engine.scene.remove(this[kk]); this[kk].geometry.dispose(); this[kk].material.dispose(); this[kk] = null; }
-    if (!S.project || Body.isCustom || !Body.H || !Body._C) return;
-    const av = S.project.avatar; const hs = av.hair.style, bs = av.beard.style;
-    if (hs !== 'none') {
-      const top = Body.lm ? Body.lm.headTop : Body.height;
-      const P = Body.geom.attributes.position.array;
-      const mask = hs === 'milong' ? (i) => Math.max(Body.hairMask[i], Body.hairLong[i]) : (i) => Body.hairMask[i];
-      const off = (m, i) => ({ rase: 0.0008, court: 0.0032, volume: 0.0035 + 0.014 * smoothstep(top - 0.09, top, P[i * 3 + 1]), milong: 0.0065 + 0.006 * smoothstep(top - 0.1, top, P[i * 3 + 1]) }[hs]);
-      this.hair = this.shell(mask, off, av.hair.color, hs === 'rase' ? 0.6 : 1);
+  hair: null, strands: null, bun: null, beard: null, _t: null, tex: null,
+  rebuild() { clearTimeout(this._t); this._t = setTimeout(() => this.build(), 120); },
+  clear() { for (const kk of ['hair', 'strands', 'bun', 'beard']) if (this[kk]) { Engine.scene.remove(this[kk]); this[kk].geometry.dispose(); if (this[kk].material.map !== this.tex) this[kk].material.dispose(); this[kk] = null; } },
+  build() {
+    this.clear();
+    if (!S.project || Body.isCustom || !Body.H || !Body.lm) { Engine.requestRender(); return; }
+    const av = S.project.avatar; let hs = av.hair.style; const bs = av.beard.style;
+    if (hs === 'volume') hs = 'degrade';
+    const st = HAIR_STYLES[hs];
+    if (st) {
+      this.hair = this.shell((i) => hs === 'long' || hs === 'milong' ? Math.max(Body.hairMask[i], Body.hairLong[i] * 0.8) : Body.hairMask[i], () => st.shell, av.hair.color, hs === 'rase' ? 0.65 : 1);
+      if (st.strands) this.strands = this.groom(st, av.hair.color, hs);
     }
     if (bs !== 'none') {
       const off = { trois: 0.0009, courte: 0.0032, pleine: 0.007 }[bs];
@@ -1112,28 +1125,115 @@ const Hair = {
     }
     Engine.requestRender();
   },
-  cap(style, color) {
-    const H = Body.H, k = Body.k, L = Body.legL || 1, hipY = Body._hipY;
-    const P = H.ccHair.apply(Body._C.hairRaw, 3); const n = H.ccHair.n;
-    for (let i = 0; i < n; i++) { P[i * 3] *= k; P[i * 3 + 1] = (P[i * 3 + 1] + hipY * (L - 1)) * k; P[i * 3 + 2] *= k; }
-    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setIndex(new THREE.BufferAttribute(quadsToIndex(H.ccHair.quads), 1)); g.computeVertexNormals();
-    // bord de la calotte fondu (ligne d'implantation douce) : distance topologique au bord
-    const q = H.ccHair.quads, cnt = new Map(); for (let f = 0; f < q.length / 4; f++) for (let i = 0; i < 4; i++) { const a = q[f * 4 + i], b = q[f * 4 + (i + 1) % 4]; const kk = a < b ? a + '_' + b : b + '_' + a; cnt.set(kk, (cnt.get(kk) || 0) + 1); }
-    const dist = new Float32Array(n).fill(99); for (const [kk, c] of cnt) if (c === 1) { const [a, b] = kk.split('_').map(Number); dist[a] = 0; dist[b] = 0; }
-    for (let it = 0; it < 3; it++) for (let f = 0; f < q.length / 4; f++) { let m = 99; for (let i = 0; i < 4; i++) m = Math.min(m, dist[q[f * 4 + i]]); for (let i = 0; i < 4; i++) { const v = q[f * 4 + i]; dist[v] = Math.min(dist[v], m + 1); } }
-    const N = g.attributes.normal.array, top = Math.max(...P.filter((_, i) => i % 3 === 1)); const c = new THREE.Color(color), col = new Float32Array(n * 4);
-    for (let i = 0; i < n; i++) {
-      const y = P[i * 3 + 1]; const t = smoothstep(top - 0.12 * k, top, y);
-      const o = { rase: 0.0006, court: 0.0028, volume: 0.003 + 0.013 * t, milong: 0.006 + 0.005 * t }[style] * (0.4 + 0.6 * Math.min(1, dist[i] / 3));
-      for (let a = 0; a < 3; a++) P[i * 3 + a] += N[i * 3 + a] * o;
-      col[i * 4] = c.r; col[i * 4 + 1] = c.g; col[i * 4 + 2] = c.b; col[i * 4 + 3] = (style === 'rase' ? 0.6 : 1) * Math.min(1, 0.25 + dist[i] / 3);
+  strandTexture() {
+    if (this.tex) return this.tex;
+    const c = newCanvas(128, 256), g = c.getContext('2d'); const rnd = seeded(7);
+    for (let i = 0; i < 42; i++) {
+      const x0 = rnd() * 128, wv = 1 + rnd() * 2.2, a = 0.55 + rnd() * 0.45;
+      g.strokeStyle = `rgba(255,255,255,${a})`; g.lineWidth = 0.8 + rnd() * 1.8; g.beginPath();
+      for (let y = 256; y >= 8 + rnd() * 40; y -= 8) { const x = x0 + Math.sin(y * 0.03 + i) * wv; y === 256 ? g.moveTo(x, y) : g.lineTo(x, y); }
+      g.stroke();
     }
-    g.attributes.position.needsUpdate = true; g.computeVertexNormals(); g.setAttribute('color', new THREE.BufferAttribute(col, 4));
-    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, transparent: true, roughness: 0.85, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
-    m.renderOrder = 1; Engine.scene.add(m); return m;
+    // pointes plus fines : fondu vers le haut de la texture (v = 1 = pointe)
+    g.globalCompositeOperation = 'destination-in'; const gr = g.createLinearGradient(0, 0, 0, 256); gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.25, 'rgba(0,0,0,1)'); g.fillStyle = gr; g.fillRect(0, 0, 128, 256);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = THREE.RepeatWrapping; this.tex = t; return t;
+  },
+  groom(st, color, name) {
+    const P = Body.geom.attributes.position.array, N = Body.geom.attributes.normal.array, I = Body.index, k = Body.k, lm = Body.lm;
+    // ellipsoïde de collision de la tête (zone « tête » du maillage)
+    const headR = Body.regionNames.indexOf('head'); let mn = [9, 9, 9], mx = [-9, -9, -9];
+    for (let i = 0; i < Body.nV; i++) if (Body.REG[i] === headR) for (let a = 0; a < 3; a++) { mn[a] = Math.min(mn[a], P[i * 3 + a]); mx[a] = Math.max(mx[a], P[i * 3 + a]); }
+    const C = new THREE.Vector3((mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2 + 0.01 * k, (mn[2] + mx[2]) / 2 - 0.004 * k);
+    const Rd = new THREE.Vector3((mx[0] - mn[0]) / 2 * 0.98, (mx[1] - mn[1]) / 2 * 0.96, (mx[2] - mn[2]) / 2 * 0.97);
+    const top = new THREE.Vector3(C.x, mx[1], C.z);
+    const torso = Body.bones.torso, tr = ((Body.regionInfo.torso || {}).r || 0.12) * 1.08, nr = ((Body.regionInfo.neck || {}).r || 0.05) * 1.1;
+    const shoulderY = Body.bones.upperarm_l.a.y;
+    const pushOut = (p, off) => {
+      const q = new THREE.Vector3((p.x - C.x) / Rd.x, (p.y - C.y) / Rd.y, (p.z - C.z) / Rd.z); const l = q.length(); const lim = 1 + off;
+      if (l < lim) { q.multiplyScalar(lim / Math.max(l, 1e-4)); p.set(C.x + q.x * Rd.x, C.y + q.y * Rd.y, C.z + q.z * Rd.z); }
+      // cou et buste (capsules) + épaules (plan incliné)
+      for (const [a, b, r] of [[Body.bones.neck.a, Body.bones.neck.b, nr], [torso.a, torso.b, tr]]) {
+        const ab = new THREE.Vector3().subVectors(b, a); const t = clamp(new THREE.Vector3().subVectors(p, a).dot(ab) / ab.lengthSq(), 0, 1); const c = a.clone().addScaledVector(ab, t); const d = p.distanceTo(c);
+        if (d < r) { const o = new THREE.Vector3().subVectors(p, c); if (o.lengthSq() < 1e-10) o.set(0, 0, -1); o.normalize(); p.copy(c).addScaledVector(o, r); }
+      }
+      const sh = shoulderY + 0.025 * k - Math.max(0, Math.abs(p.x) - 0.06 * k) * 0.35; if (p.y < sh && Math.abs(p.x) > 0.075 * k && Math.abs(p.x) < 0.24 * k && Math.abs(p.z - torso.b.z) < 0.09 * k) p.y = sh;
+    };
+    // racines : faces du cuir chevelu, tirage proportionnel à l'aire et au masque
+    const extra = name === 'long' || name === 'milong';
+    const faces = [], cum = []; let tot = 0; const msk = new Float32Array(Body.nV); for (let i = 0; i < Body.nV; i++) msk[i] = extra ? Math.max(Body.hairMask[i], Body.hairLong[i] * 0.7) : Body.hairMask[i];
+    for (let f = 0; f < Body.nF; f++) {
+      const a = I[f * 3], b = I[f * 3 + 1], c = I[f * 3 + 2]; const m = Math.min(msk[a], msk[b], msk[c]); if (m < 0.35) continue;
+      const A = new THREE.Vector3().fromArray(P, a * 3), B = new THREE.Vector3().fromArray(P, b * 3), Cc = new THREE.Vector3().fromArray(P, c * 3);
+      const area = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(Cc, A)).length() / 2; tot += area * m; faces.push(f); cum.push(tot);
+    }
+    if (!faces.length) return null;
+    const rnd = seeded(11 + name.length), n = st.strands, SEG = st.len > 0.1 ? 12 : st.len > 0.04 ? 7 : 4;
+    const pos = new Float32Array(n * (SEG + 1) * 2 * 3), uv = new Float32Array(n * (SEG + 1) * 2 * 2), col = new Float32Array(n * (SEG + 1) * 2 * 3), idx = new Uint32Array(n * SEG * 6);
+    const base = new THREE.Color(color); let vp = 0, ip = 0;
+    const partX = C.x + 0.022 * k;
+    for (let s = 0; s < n; s++) {
+      const r = rnd() * tot; let lo = 0, hi = cum.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < r) lo = m + 1; else hi = m; }
+      const f = faces[lo]; let u1 = rnd(), u2 = rnd(); if (u1 + u2 > 1) { u1 = 1 - u1; u2 = 1 - u2; }
+      const ia = I[f * 3], ib = I[f * 3 + 1], ic = I[f * 3 + 2];
+      const p = new THREE.Vector3(), nrm = new THREE.Vector3();
+      for (const [vi, w] of [[ia, 1 - u1 - u2], [ib, u1], [ic, u2]]) { p.x += P[vi * 3] * w; p.y += P[vi * 3 + 1] * w; p.z += P[vi * 3 + 2] * w; nrm.x += N[vi * 3] * w; nrm.y += N[vi * 3 + 1] * w; nrm.z += N[vi * 3 + 2] * w; }
+      nrm.normalize();
+      // sens de coiffage initial
+      const tang = (v) => v.addScaledVector(nrm, -v.dot(nrm)).normalize();
+      let dir;
+      if (st.comb === 'back') dir = tang(new THREE.Vector3(0, -0.15, -1));
+      else if (st.comb === 'radial') dir = nrm.clone();
+      else if (st.comb === 'bun') dir = tang(new THREE.Vector3().subVectors(new THREE.Vector3(C.x, C.y + Rd.y * 0.25, C.z - Rd.z * 1.05), p));
+      else { const side = p.x >= partX ? 1 : -1; dir = tang(new THREE.Vector3(side * 0.9, -0.4, p.z > C.z + Rd.z * 0.35 ? -0.7 : -0.25)); }
+      if (extra && p.y < C.y - Rd.y * 0.15) dir = tang(new THREE.Vector3((p.x - C.x) * 2, -1, -0.25)); // nuque : tombe vers le bas
+      dir.lerp(nrm, st.lift).normalize();
+      // longueur : dégradé (court sur les côtés et la nuque), frange plus courte pour les longs
+      let len = st.len * k * (0.8 + rnd() * 0.4);
+      const hgt = clamp((p.y - (C.y - Rd.y * 0.2)) / (Rd.y * 1.2), 0, 1);
+      if (st.fade) len *= 0.12 + 0.88 * Math.pow(hgt, 1.6);
+      if (extra && p.z > C.z + Rd.z * 0.5 && Math.abs(p.x - C.x) < Rd.x * 0.6) len *= 0.3;
+      if (st.comb === 'bun') len = Math.min(len, p.distanceTo(new THREE.Vector3(C.x, C.y + Rd.y * 0.25, C.z - Rd.z * 1.05)) * 0.95);
+      const segL = len / SEG, wid = st.width * k * (0.75 + rnd() * 0.5);
+      const shade = 0.72 + rnd() * 0.36; const pts = [p.clone().addScaledVector(nrm, 0.0015)]; const dirs = [dir.clone()];
+      const cphase = rnd() * 6.28, cax = new THREE.Vector3(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5).normalize();
+      let cur = pts[0].clone(), d = dir.clone();
+      for (let k2 = 1; k2 <= SEG; k2++) {
+        d.y -= st.gravity * segL * 18; // gravité
+        if (st.curl) d.add(new THREE.Vector3().crossVectors(d, cax).multiplyScalar(Math.sin(cphase + k2 * 1.3) * st.curl * 0.6));
+        { const en = new THREE.Vector3((cur.x - C.x) / (Rd.x * Rd.x), (cur.y - C.y) / (Rd.y * Rd.y), (cur.z - C.z) / (Rd.z * Rd.z)).normalize(); const dn = d.dot(en); if (dn > 0) d.addScaledVector(en, -dn * st.hug * smoothstep(C.y - Rd.y * 0.45, C.y + Rd.y * 0.1, cur.y)); }
+        d.normalize(); cur = cur.clone().addScaledVector(d, segL);
+        pushOut(cur, 0.025 + 0.05 * (k2 / SEG) * (1 - st.hug));
+        d = new THREE.Vector3().subVectors(cur, pts[k2 - 1]).normalize(); pts.push(cur); dirs.push(d.clone());
+      }
+      // ruban : largeur le long de la surface (tangente perpendiculaire à la mèche)
+      const v0 = vp;
+      for (let k2 = 0; k2 <= SEG; k2++) {
+        const q = pts[k2]; const out = new THREE.Vector3((q.x - C.x) / Rd.x, (q.y - C.y) / Rd.y, (q.z - C.z) / Rd.z).normalize();
+        const side = new THREE.Vector3().crossVectors(dirs[k2], out); if (side.lengthSq() < 1e-6) side.set(1, 0, 0); side.normalize();
+        const ww = wid * (1 - 0.55 * k2 / SEG) / 2; const t = k2 / SEG;
+        for (const sgn of [-1, 1]) {
+          pos[vp * 3] = q.x + side.x * ww * sgn; pos[vp * 3 + 1] = q.y + side.y * ww * sgn; pos[vp * 3 + 2] = q.z + side.z * ww * sgn;
+          uv[vp * 2] = sgn < 0 ? s % 7 / 7 : (s % 7 + 1) / 7; uv[vp * 2 + 1] = t;
+          const lum = shade * (0.55 + 0.45 * Math.min(1, t * 2.5)); col[vp * 3] = base.r * lum; col[vp * 3 + 1] = base.g * lum; col[vp * 3 + 2] = base.b * lum; vp++;
+        }
+      }
+      for (let k2 = 0; k2 < SEG; k2++) { const a = v0 + k2 * 2; idx[ip++] = a; idx[ip++] = a + 1; idx[ip++] = a + 3; idx[ip++] = a; idx[ip++] = a + 3; idx[ip++] = a + 2; }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); g.setAttribute('color', new THREE.BufferAttribute(col, 3)); g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.computeVertexNormals();
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ map: this.strandTexture(), vertexColors: true, alphaTest: 0.32, side: THREE.DoubleSide, roughness: 0.82, metalness: 0, envMapIntensity: 0.5 }));
+    m.renderOrder = 1; Engine.scene.add(m);
+    if (st.bun) {
+      const bc = new THREE.Vector3(C.x, C.y + Rd.y * 0.28, C.z - Rd.z * 1.18), br = 0.04 * k;
+      const bg = new THREE.SphereGeometry(br, 24, 16); bg.scale(1, 0.85, 0.9); bg.translate(bc.x, bc.y, bc.z);
+      const bm = new THREE.Mesh(bg, new THREE.MeshStandardMaterial({ color: base.clone().multiplyScalar(0.8), roughness: 0.85 }));
+      Engine.scene.add(bm); this.bun = bm;
+    }
+    return m;
   },
   shell(maskFn, offFn, color, opacity) {
-    const P = Body.geom.attributes.position.array, N = Body.geom.attributes.normal.array, I = Body.index, k = Body.k;
+    const P = Body.geom.attributes.position.array, N = Body.geom.attributes.normal.array, I = Body.index;
     const map = new Int32Array(Body.nV).fill(-1); const pos = [], col = [], idx = [];
     const c = new THREE.Color(color);
     for (let f = 0; f < Body.nF; f++) {
@@ -1143,7 +1243,7 @@ const Hair = {
         if (map[v] < 0) {
           map[v] = pos.length / 3; const m = maskFn(v); const o = offFn(m, v) * (0.25 + 0.75 * m);
           pos.push(P[v * 3] + N[v * 3] * o, P[v * 3 + 1] + N[v * 3 + 1] * o, P[v * 3 + 2] + N[v * 3 + 2] * o);
-          col.push(c.r, c.g, c.b, smoothstep(0.05, 0.75, m) * opacity);
+          col.push(c.r * 0.8, c.g * 0.8, c.b * 0.8, smoothstep(0.05, 0.75, m) * opacity);
         }
         idx.push(map[v]);
       }
@@ -2204,9 +2304,9 @@ const UI = {
       ...['#5b3a24', '#3a2416', '#5d6b3a', '#3f6c8c', '#6b7a86'].map(c => h('button', { title: c, style: { width: '26px', height: '26px', borderRadius: '50%', background: c, border: (av.eyes || '#5b3a24') === c ? '2px solid var(--acc)' : '2px solid var(--line2)' }, onclick: () => { History.record(); av.eyes = c; Eyes.colorize(); Save.mark(); this.renderRight(); } }))));
     b.append(sk);
     if (!Body.isCustom) {
-      const hb = h('div', { class: 'sec' }, h('h4', {}, 'Cheveux et barbe (simplifiés)'));
+      const hb = h('div', { class: 'sec' }, h('h4', {}, 'Cheveux et barbe'));
       const hs = h('select', { class: 'inp', onchange: (e) => { History.record(); av.hair.style = e.target.value; Hair.rebuild(); Save.mark(); } },
-        [['none', 'Aucun'], ['rase', 'Rasés'], ['court', 'Courts'], ['volume', 'Volume sur le dessus'], ['milong', 'Mi-longs (nuque)']].map(([v, l]) => h('option', { value: v, selected: av.hair.style === v }, l)));
+        [['none', 'Aucun (crâne rasé)'], ...Object.entries(HAIR_STYLES).map(([k2, v]) => [k2, v.label])].map(([v, l]) => h('option', { value: v, selected: av.hair.style === v || (av.hair.style === 'volume' && v === 'degrade') }, l)));
       const bs = h('select', { class: 'inp', onchange: (e) => { History.record(); av.beard.style = e.target.value; Hair.rebuild(); Save.mark(); } },
         [['none', 'Aucune'], ['trois', 'Barbe de 3 jours'], ['courte', 'Courte'], ['pleine', 'Pleine']].map(([v, l]) => h('option', { value: v, selected: av.beard.style === v }, l)));
       hb.append(h('div', { class: 'row' }, h('label', {}, 'Cheveux'), h('input', { type: 'color', value: av.hair.color, onchange: (e) => { History.record(); av.hair.color = e.target.value; Hair.rebuild(); Save.mark(); } })), hs,
@@ -3607,7 +3707,7 @@ async function boot() {
   if (!localStorage.getItem('inkbody.guide')) showGuide();
   setTimeout(gcImages, 5000);
   try { sessionStorage.removeItem('ibFix'); } catch (e) { /* */ }
-  window.InkBody = { S, App, Body, Engine, Decals, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
+  window.InkBody = { S, App, Body, Engine, Decals, Hair, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
 }
 boot().catch((e) => { const l = document.getElementById('loader'); if (l) { const d = document.createElement('div'); d.className = 'muted'; d.style.cssText = 'max-width:460px;text-align:center;padding:0 16px'; d.textContent = 'Erreur au démarrage : ' + (e && e.message || e); l.appendChild(d); } });
 
