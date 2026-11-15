@@ -54,3 +54,20 @@ Sur iPad en portrait : 3D plein écran et panneaux en tiroirs latéraux ; en pay
 
 ## Licences
 Voir `LICENSES.md`.
+
+## Création de tatouages par IA (v3.2)
+
+Le serveur Railway intègre un service de génération (`/api/ai/health`, `/api/ai/generate`, fichier `ai.js`).
+La clé n'est **jamais** dans le site : elle se règle dans les variables Railway du service.
+
+| Variable | Rôle |
+|---|---|
+| `OPENAI_API_KEY` | clé OpenAI (côté serveur uniquement) |
+| `ACCESS_CODE` | code personnel demandé dans l'app (sans lui, personne ne peut consommer le crédit) |
+| `OPENAI_IMAGE_MODEL` | facultatif, `gpt-image-1` par défaut |
+| `IMAGE_QUALITY` | facultatif : `low`, `medium` (défaut), `high` |
+| `MAX_PER_IP_PER_DAY` / `MAX_PER_DAY` | quotas (30 / 120 par défaut) |
+
+Modes : **manchette complète** (planche verticale épaule → poignet, enroulée automatiquement autour du bras),
+**motif** (posé au centre de la vue), **compléter la zone visible** (vue + masque, tatouages existants protégés).
+Les images de référence ne partent qu'après accord explicite.

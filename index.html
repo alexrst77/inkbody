@@ -1945,6 +1945,41 @@ const App = {
     toast(n ? (lock ? n + ' tatouage(s) existant(s) verrouillé(s)' : 'Tatouages existants déverrouillés') : 'Aucun tatouage marqué « Existant ».');
   },
   // ---- bibliothèque
+  // pose automatique d'un motif : manchette (épaule → poignet) ou au centre de la vue
+  async autoPlace(lib, target) {
+    if (!lib || Body.isCustom && target.kind === 'sleeve') return null;
+    const aspect = (lib.w && lib.h) ? lib.w / lib.h : 0.5;
+    let hit, size;
+    if (target.kind === 'sleeve') {
+      const sd = target.side === 'l' ? 'l' : 'r', B = Body.bones, u = B['upperarm_' + sd], f = B['forearm_' + sd];
+      const top = u.a.clone().addScaledVector(new THREE.Vector3().subVectors(u.a, u.b).normalize(), 0.05 * Body.k);
+      const pts = [top, u.a, u.b, f.b]; let L = 0; for (let i = 1; i < pts.length; i++) L += pts[i].distanceTo(pts[i - 1]);
+      // milieu de la chaîne épaule → poignet
+      let rest = L / 2, mid = pts[0].clone();
+      for (let i = 1; i < pts.length; i++) { const d = pts[i].distanceTo(pts[i - 1]); if (rest <= d) { mid = pts[i - 1].clone().lerp(pts[i], rest / d); break; } rest -= d; }
+      const out = new THREE.Vector3(sd === 'l' ? 1 : -1, 0, 0.45).normalize(); // face externe, légèrement vers l'avant (vue de profil)
+      hit = Body.closest(mid.clone().addScaledVector(out, 0.15));
+      size = { hCm: L * 100 * 0.97, sleeve: true };
+    } else {
+      const rc = new THREE.Raycaster(); rc.setFromCamera(new THREE.Vector2(0, 0), Engine.camera);
+      const h0 = Body.raycast(rc);
+      hit = h0 ? { faceIndex: h0.faceIndex, point: h0.point } : Body.closest(new THREE.Vector3(0.05, Body.lm.ribY, 0.15));
+      const wCm = aspect >= 1 ? 12 : 12 * aspect; size = { widthCm: +wCm.toFixed(1), heightCm: +(wCm / aspect).toFixed(1), lockRatio: true };
+    }
+    if (!hit) return null;
+    const t = await this.addTattoo(lib, hit) || S.selected; if (!t) return null;
+    if (size.sleeve) {
+      // le déroulé est angulaire : la largeur est plafonnée à ~85 % du tour du membre à l'ancre (le dessous du bras reste libre, pas de chevauchement)
+      const R = (Body.regionInfo[t.region] || {}).r || 0.04, circ = 2 * Math.PI * R * 100;
+      let wCm = size.hCm * aspect; const capped = wCm > circ * 0.85; if (capped) wCm = circ * 0.85;
+      size = { widthCm: +wCm.toFixed(1), heightCm: +size.hCm.toFixed(1), lockRatio: !capped };
+    }
+    this.update(t, { ...size, rotation: 0, mode: 'surface' });
+    this.select(t.id); UI.renderRight && UI.renderRight();
+    const sp = Body.surface(t.anchor);
+    if (sp) Engine.flyTo(sp.p.clone(), sp.p.clone().add(sp.n.clone().multiplyScalar(target.kind === 'sleeve' ? 1.15 : 0.6)));
+    return t;
+  },
   async addLibrary({ blob, original, name, source = 'import', w, h }) {
     const imageId = await Images.save(blob, { w, h });
     const originalImageId = original ? await Images.save(original) : null;
@@ -2141,6 +2176,7 @@ const UI = {
     drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
     drop.addEventListener('dragleave', () => drop.classList.remove('over'));
     drop.addEventListener('drop', (e) => { e.preventDefault(); drop.classList.remove('over'); Importer.files([...e.dataTransfer.files]); });
+    body.append(h('button', { class: 'btn primary', style: { width: '100%', marginBottom: '10px' }, onclick: () => { UI.closeSheets && isMobile() && UI.closeSheets(); AI.open(); } }, '✦ Créer un tatouage avec l’IA (manchette, motif…)'));
     body.append(drop);
     body.append(h('div', { class: 'row' },
       h('button', { class: 'btn sm', onclick: () => Draw.open() }, '✎ Créer un motif / liaison'),
@@ -3536,56 +3572,79 @@ const Variants = {
 
 // ---------------------------------------------------------------- assistant IA (optionnel, service à déployer soi-même)
 const AI = {
-  get endpoint() { return localStorage.getItem('inkbody.ai.endpoint') || ''; },
-  accessCode: '', // gardé en mémoire uniquement, jamais enregistré
-  open() {
+  // par défaut : le service intégré au serveur Railway (même adresse que le site). Une autre adresse reste possible.
+  get endpoint() { return localStorage.getItem('inkbody.ai.endpoint') || (/^https?:$/.test(location.protocol) && !/github\.io$/.test(location.hostname) ? location.origin + '/api/ai' : ''); },
+  get accessCode() { return this._code != null ? this._code : (localStorage.getItem('inkbody.ai.code') || ''); },
+  set accessCode(v) { this._code = v; },
+  st: null,
+  open(preset) {
     const body = h('div');
-    const m = openModal({ title: 'Assistant IA', size: 'wide', body });
+    const m = openModal({ title: 'Créer un tatouage avec l’IA', size: 'wide', body });
+    if (!this.st) this.st = { mode: 'manchette', side: 'r', prompt: '', style: 'réaliste noir et gris', refs: new Set(), results: [], auto: true, placed: null };
+    if (preset) Object.assign(this.st, preset);
     this.render(body, m);
   },
   render(body, m) {
     body.innerHTML = '';
-    const ep = this.endpoint;
-    const cfg = h('div', { class: 'sec' }, h('h4', {}, 'Configuration'),
-      h('p', { class: 'muted' }, 'InkBody ne contient aucune clé d’API. Pour utiliser la génération d’images, déployez le petit service fourni (dossier serverless/) avec votre propre clé côté serveur, puis indiquez son adresse ici.'));
-    const urlIn = h('input', { class: 'inp', placeholder: 'https://votre-service.workers.dev', value: ep });
-    cfg.append(h('div', { class: 'row' }, urlIn, h('button', { class: 'btn sm', onclick: async () => {
-      const u = urlIn.value.trim();
-      if (u && !/^https:\/\/[^\s/]+/.test(u)) return toast('Adresse https:// requise.', 'err');
-      if (u) localStorage.setItem('inkbody.ai.endpoint', u.replace(/\/+$/, '')); else localStorage.removeItem('inkbody.ai.endpoint');
-      this.render(body, m);
+    const ep = this.endpoint, st = this.st;
+    const status = h('span', { class: 'muted' }, 'vérification…');
+    const cfg = h('details', { class: 'sec' }, h('summary', {}, 'Réglages du service IA'),
+      h('p', { class: 'muted' }, 'La clé du fournisseur d’IA reste sur le serveur (variable OPENAI_API_KEY de Railway) : l’app n’en contient aucune. Le code d’accès (variable ACCESS_CODE) empêche un inconnu d’utiliser votre crédit.'));
+    const urlIn = h('input', { class: 'inp', placeholder: 'Adresse du service (vide = serveur InkBody)', value: localStorage.getItem('inkbody.ai.endpoint') || '' });
+    cfg.append(h('div', { class: 'row' }, urlIn, h('button', { class: 'btn sm', onclick: () => {
+      const u = urlIn.value.trim(); if (u && !/^https:\/\/[^\s/]+/.test(u)) return toast('Adresse https:// requise.', 'err');
+      if (u) localStorage.setItem('inkbody.ai.endpoint', u.replace(/\/+$/, '')); else localStorage.removeItem('inkbody.ai.endpoint'); this.render(body, m);
     } }, 'Enregistrer')));
-    if (!ep) {
-      body.append(h('div', { class: 'note warn' }, h('b', {}, 'IA non configurée. '), 'Aucune génération n’est disponible et aucun résultat n’est simulé. Tous les outils manuels restent utilisables.'));
-      body.append(h('div', { class: 'row' }, h('button', { class: 'btn primary', onclick: () => { m.close(); Draw.open(); } }, 'Ouvrir les outils de liaison manuels')));
-      body.append(cfg); return;
-    }
-    const status = h('span', { class: 'muted' }, 'Vérification du service…');
-    fetch(ep + '/health', { method: 'GET' }).then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))).then(j => status.textContent = 'Service joignable' + (j && j.model ? ' (' + j.model + ')' : '') + '.').catch(e => { status.textContent = 'Service injoignable : ' + e.message; status.style.color = 'var(--red)'; });
-    body.append(h('div', { class: 'note' }, 'Service : ', h('b', {}, ep), ' — ', status));
-    const st = { mode: 'motif', prompt: '', style: 'fine line', refs: new Set(S.selected ? [S.selected.libId] : []), consent: false, results: [] };
-    const form = h('div');
+    body.append(h('div', { class: 'note' }, 'Service : ', status));
+    if (ep) fetch(ep + '/health').then(r => r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))).then(j => {
+      if (j.ready === false) { status.textContent = !j.key ? 'clé OPENAI_API_KEY absente dans Railway.' : 'variable ACCESS_CODE absente dans Railway.'; status.style.color = 'var(--red)'; }
+      else status.textContent = 'prêt (' + (j.model || 'IA') + ').';
+    }).catch(e => { status.textContent = 'injoignable (' + e.message + ').'; status.style.color = 'var(--red)'; });
+    else status.textContent = 'aucun (site hébergé sans serveur : renseignez une adresse dans les réglages).';
+
+    const form = h('div'); body.append(form, cfg);
     const draw = () => {
       form.innerHTML = '';
-      form.append(h('div', { class: 'sec' }, h('h4', {}, '1. Type de proposition'), UI.seg([['motif', 'Nouveau motif'], ['liaison', 'Liaison entre motifs'], ['composition', 'Composition dans la zone']], st.mode, (v) => { st.mode = v; draw(); })));
-      if (st.mode !== 'motif') form.append(h('div', { class: 'note' }, 'La vue actuelle de l’avatar sera envoyée avec un masque : seules les zones de peau libres sont modifiables, les tatouages placés (dont les existants) sont protégés. Cadrez la zone avant d’ouvrir l’assistant.'));
+      form.append(h('div', { class: 'sec' }, h('h4', {}, '1. Que créer ?'), UI.seg([['manchette', 'Manchette complète'], ['motif', 'Motif'], ['composition', 'Compléter la zone visible']], st.mode, (v) => { st.mode = v; draw(); })));
+      if (st.mode === 'manchette') form.append(h('div', { class: 'sec' }, h('h4', {}, 'Bras'), UI.seg([['r', 'Bras droit'], ['l', 'Bras gauche']], st.side, (v) => { st.side = v; draw(); }),
+        h('p', { class: 'muted' }, 'Le dessin est créé en planche verticale (haut = épaule, bas = poignet) puis enroulé automatiquement autour du bras.')));
+      if (st.mode === 'composition') form.append(h('div', { class: 'note' }, 'La vue actuelle de l’avatar est envoyée avec un masque : seule la peau libre est modifiable, les tatouages placés sont protégés. Cadrez la zone avant de lancer.'));
+      const ta = h('textarea', { class: 'inp', rows: 3, placeholder: st.mode === 'manchette' ? 'Ex. : grande rose sur l’épaule, roi d’échecs sur le biceps, volutes baroques, fleurs sur l’avant-bras, rose sur le dos de la main' : 'Ex. : rose réaliste avec feuilles, ombrage doux', value: st.prompt, oninput: (e) => st.prompt = e.target.value.slice(0, 1000) });
+      const styles = ['réaliste noir et gris', 'fine line', 'dotwork', 'blackwork', 'ornemental', 'traditionnel', 'néo-traditionnel', 'japonais', 'géométrique', 'aquarelle'];
+      form.append(h('div', { class: 'sec' }, h('h4', {}, '2. Votre idée'), ta, h('select', { class: 'inp', style: { marginTop: '8px' }, onchange: (e) => st.style = e.target.value }, styles.map(x => h('option', { selected: x === st.style }, x)))));
       const refGrid = h('div', { class: 'lib', style: { marginBottom: '8px' } });
       for (const l of S.project.library.slice(0, 24)) { const img = h('img'); Images.url(l.imageId).then(u => img.src = u); refGrid.append(h('button', { class: 'lib-item' + (st.refs.has(l.id) ? ' on' : ''), title: l.name, onclick: () => { st.refs.has(l.id) ? st.refs.delete(l.id) : st.refs.size < 3 && st.refs.add(l.id); draw(); } }, img)); }
-      form.append(h('div', { class: 'sec' }, h('h4', {}, '2. Motifs de référence (style, 3 max)'), S.project.library.length ? refGrid : h('p', { class: 'muted' }, 'Aucun motif en bibliothèque.')));
-      const ta = h('textarea', { class: 'inp', placeholder: 'Ex. : branches fines reliant les deux fleurs, petites feuilles, sans ombrage lourd', value: st.prompt, oninput: (e) => st.prompt = e.target.value.slice(0, 800) });
-      const styles = ['fine line', 'dotwork', 'blackwork', 'traditionnel', 'néo-traditionnel', 'japonais', 'géométrique', 'ornemental', 'réaliste noir et gris', 'aquarelle'];
-      form.append(h('div', { class: 'sec' }, h('h4', {}, '3. Description et style'), ta, h('select', { class: 'inp', style: { marginTop: '8px' }, onchange: (e) => st.style = e.target.value }, styles.map(s => h('option', { selected: s === st.style }, s)))));
-      const codeIn = h('input', { class: 'inp', type: 'password', placeholder: 'Code d’accès du service (si configuré)', value: this.accessCode, oninput: (e) => this.accessCode = e.target.value });
-      form.append(h('div', { class: 'field' }, h('span', {}, 'Code d’accès (gardé en mémoire le temps de la session, jamais enregistré)'), codeIn));
-      const go = h('button', { class: 'btn primary', onclick: () => this.prepare(st, draw) }, 'Préparer l’envoi…');
-      form.append(go);
+      form.append(h('div', { class: 'sec' }, h('h4', {}, '3. Motifs à reprendre (facultatif, 3 max)'), h('p', { class: 'muted' }, 'Ex. : votre rose ou votre roi d’échecs : l’IA reprend leur style et les intègre.'), S.project.library.length ? refGrid : h('p', { class: 'muted' }, 'Bibliothèque vide.')));
+      const codeIn = h('input', { class: 'inp', type: 'password', autocomplete: 'off', placeholder: 'Code d’accès (ACCESS_CODE)', value: this.accessCode, oninput: (e) => this.accessCode = e.target.value });
+      const remember = h('input', { type: 'checkbox', checked: localStorage.getItem('inkbody.ai.noremember') !== '1' });
+      form.append(h('div', { class: 'field' }, h('span', {}, 'Code d’accès'), codeIn), h('label', { class: 'chk' }, remember, 'Se souvenir du code sur cet appareil'));
+      if (st.mode !== 'composition') form.append(h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: st.auto, onchange: (e) => st.auto = e.target.checked }), 'Poser automatiquement le résultat sur l’avatar'));
+      form.append(h('button', { class: 'btn primary', style: { width: '100%', marginTop: '10px' }, onclick: () => {
+        if (remember.checked && this.accessCode) { localStorage.setItem('inkbody.ai.code', this.accessCode); localStorage.removeItem('inkbody.ai.noremember'); } else { localStorage.removeItem('inkbody.ai.code'); localStorage.setItem('inkbody.ai.noremember', '1'); }
+        this.prepare(st, draw, m);
+      } }, st.mode === 'manchette' ? 'Créer la manchette' : st.mode === 'motif' ? 'Créer le motif' : 'Créer la composition'));
       if (st.results.length) {
         const grid = h('div', { class: 'thumbs', style: { marginTop: '14px' } });
-        for (const r of st.results) grid.append(h('figure', {}, h('img', { src: r.url }), h('figcaption', {}, 'Proposition', h('button', { class: 'btn sm primary', disabled: r.added, onclick: async () => { const t = trimCanvas(imageToCanvas(await blobToImage(r.blob))); await App.addLibrary({ blob: await canvasToBlob(t), name: 'IA — ' + (st.prompt.slice(0, 30) || st.style), source: 'ia', w: t.width, h: t.height }); r.added = true; draw(); toast('Ajouté à la bibliothèque comme motif indépendant.', 'ok'); } }, r.added ? 'Ajouté' : 'Ajouter'))));
-        form.append(h('div', { class: 'sec' }, h('h4', {}, 'Propositions (aperçus à adapter)'), h('p', { class: 'muted' }, 'Une image générée reste un aperçu 2D : placez-la puis ajustez-la sur le corps. Rien n’est ajouté sans votre validation.'), grid));
+        for (const r of st.results) grid.append(h('figure', {}, h('img', { src: r.url, style: { background: '#e9e4dc' } }), h('figcaption', {},
+          st.mode !== 'composition' ? h('button', { class: 'btn sm primary', onclick: () => this.useResult(r, st, m) }, r.placed ? 'Sur l’avatar ✓' : 'Essayer sur l’avatar') : null,
+          h('button', { class: 'btn sm', disabled: r.added, onclick: async () => { await this.toLibrary(r, st); draw(); toast('Ajouté à la bibliothèque.', 'ok'); } }, r.added ? 'Dans la bibliothèque' : 'Bibliothèque'))));
+        form.append(h('div', { class: 'sec' }, h('h4', {}, 'Propositions'), h('p', { class: 'muted' }, 'Touchez « Essayer sur l’avatar » pour remplacer le motif posé par une autre proposition.'), grid));
       }
     };
-    draw(); body.append(form, cfg);
+    draw();
+  },
+  async toLibrary(r, st) {
+    if (r.lib) return r.lib;
+    const t = trimCanvas(imageToCanvas(await blobToImage(r.blob)));
+    r.lib = await App.addLibrary({ blob: await canvasToBlob(t), name: (st.mode === 'manchette' ? 'Manchette IA — ' : 'IA — ') + (st.prompt.slice(0, 28) || st.style), source: 'ia', w: t.width, h: t.height });
+    r.added = true; return r.lib;
+  },
+  async useResult(r, st, m) {
+    const lib = await this.toLibrary(r, st);
+    const prev = st.placed && S.tattoos.find(t => t.id === st.placed);
+    if (prev) App.remove ? App.remove(prev.id) : null;
+    const t = await App.autoPlace(lib, st.mode === 'manchette' ? { kind: 'sleeve', side: st.side } : { kind: 'view' });
+    if (t) { st.placed = t.id; st.results.forEach(x => x.placed = x === r); m && m.close(); toast(st.mode === 'manchette' ? 'Manchette posée sur le bras ' + (st.side === 'l' ? 'gauche' : 'droit') + '. Rouvrez « IA » pour essayer une autre proposition.' : 'Motif posé au centre de la vue.', 'ok', 6000); }
   },
   async capture() {
     // vue cadrée + masque (transparent = peau libre modifiable)
@@ -3596,45 +3655,48 @@ const AI = {
     const white = new THREE.MeshBasicMaterial({ color: 0xffffff });
     swap(Body.mesh, white);
     for (const r of Decals.objects.values()) swap(r.mesh, new THREE.MeshBasicMaterial({ color: 0x000000, map: r.mesh.material.map, transparent: true, alphaTest: 0.15, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
-    const hid = [Hair.hair, Hair.beard, Face.mesh].filter(Boolean); hid.forEach(o => o.visible = false);
+    const hid = [Hair.hair, Hair.strands, Hair.bun, Hair.beard, Face.mesh].filter(Boolean); hid.forEach(o => o.visible = false);
     const tm = Engine.renderer.toneMapping; Engine.renderer.toneMapping = THREE.NoToneMapping;
     let mask;
     try { mask = Engine.renderOffscreen({ width: size, height: size, background: '#000000' }); }
-    finally { Engine.renderer.toneMapping = tm; swaps.forEach(([m, mat]) => { if (m.material !== white) m.material.dispose(); m.material = mat; }); white.dispose(); hid.forEach(o => o.visible = true); Engine.requestRender(); }
+    finally { Engine.renderer.toneMapping = tm; swaps.forEach(([mm, mat]) => { if (mm.material !== white) mm.material.dispose(); mm.material = mat; }); white.dispose(); hid.forEach(o => o.visible = true); Engine.requestRender(); }
     const g = ctx2d(mask), d = g.getImageData(0, 0, size, size); const a = d.data;
     for (let i = 0; i < a.length; i += 4) { const free = a[i] > 200 && a[i + 1] > 200; a[i] = a[i + 1] = a[i + 2] = 0; a[i + 3] = free ? 0 : 255; }
     g.putImageData(d, 0, 0);
     return { img, mask };
   },
-  async prepare(st, redraw) {
-    if (!st.prompt.trim() && st.mode === 'motif') return toast('Décrivez votre idée.');
-    const send = { mode: st.mode, prompt: st.prompt.trim(), style: st.style, references: [], n: 2 };
+  async prepare(st, redraw, m) {
+    if (!this.endpoint) return toast('Aucun service IA configuré.', 'err');
+    if (!st.prompt.trim() && st.mode !== 'composition') return toast('Décrivez votre idée.');
+    if (!this.accessCode) return toast('Entrez le code d’accès (ACCESS_CODE défini dans Railway).');
+    const send = { mode: st.mode, side: st.side, prompt: st.prompt.trim(), style: st.style, references: [], n: 2 };
     const previews = [];
     for (const id of st.refs) { const l = S.lib(id); if (!l) continue; const c = imageToCanvas(await Images.bitmap(l.imageId), 1024); const u = c.toDataURL('image/png'); send.references.push(u); previews.push([l.name, u]); }
-    if (st.mode !== 'motif') { const { img, mask } = await this.capture(); send.zoneImage = img.toDataURL('image/png'); send.mask = mask.toDataURL('image/png'); previews.unshift(['Vue de la zone', send.zoneImage], ['Masque (zones libres)', send.mask]); }
+    if (st.mode === 'composition') { const { img, mask } = await this.capture(); send.zoneImage = img.toDataURL('image/png'); send.mask = mask.toDataURL('image/png'); previews.unshift(['Vue de la zone', send.zoneImage], ['Masque (zones libres)', send.mask]); }
+    if (!previews.length) return this.call(send, st, redraw, m); // texte seul : aucune image envoyée
     let consent = false;
     const grid = h('div', { class: 'thumbs' }, previews.map(([n, u]) => h('figure', {}, h('img', { src: u }), h('figcaption', {}, n))));
-    const btn = { label: 'Envoyer au service', cls: 'primary', onClick: async (close) => {
-      if (!consent) return toast('Cochez l’autorisation d’envoi.');
-      close(); await this.call(send, st, redraw);
-    } };
     openModal({ title: 'Images envoyées au service', size: 'wide', body: h('div', {},
-      h('p', {}, previews.length ? 'Ces images seront transmises à ' + this.endpoint + ' puis au fournisseur d’IA configuré :' : 'Seule la description textuelle sera envoyée.'), grid,
-      h('label', { class: 'chk', style: { marginTop: '12px' } }, h('input', { type: 'checkbox', onchange: (e) => consent = e.target.checked }), 'J’autorise l’envoi de ces éléments au service externe.')), actions: [btn] });
+      h('p', {}, 'Ces images seront transmises au service IA puis au fournisseur (OpenAI) :'), grid,
+      h('label', { class: 'chk', style: { marginTop: '12px' } }, h('input', { type: 'checkbox', onchange: (e) => consent = e.target.checked }), 'J’autorise l’envoi de ces images.')),
+      actions: [{ label: 'Envoyer', cls: 'primary', onClick: async (close) => { if (!consent) return toast('Cochez l’autorisation d’envoi.'); close(); await this.call(send, st, redraw, m); } }] });
   },
-  async call(send, st, redraw) {
-    const busy = Busy.show('Génération en cours (cela peut prendre une minute)…');
-    const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 180000);
+  async call(send, st, redraw, m) {
+    const busy = Busy.show(st.mode === 'manchette' ? 'Création de la manchette (jusqu’à 2 minutes)…' : 'Génération en cours (jusqu’à 1 minute)…');
+    const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 260000);
     try {
-      const res = await fetch(this.endpoint + '/generate', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(this.accessCode ? { 'X-Access-Code': this.accessCode } : {}) }, body: JSON.stringify(send), signal: ctrl.signal });
+      const res = await fetch(this.endpoint + '/generate', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Access-Code': this.accessCode }, body: JSON.stringify(send), signal: ctrl.signal });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
       const imgs = (j.images || []).filter(u => typeof u === 'string' && /^data:image\/(png|webp|jpeg);base64,/.test(u));
       if (!imgs.length) throw new Error('aucune image reçue');
-      for (const u of imgs) { const blob = await dataURLToBlob(u); st.results.push({ url: URL.createObjectURL(blob), blob, added: false }); }
-      redraw(); toast(imgs.length + ' proposition(s) reçue(s). Validez celles à ajouter.', 'ok');
-    } catch (e) { toast('Génération impossible : ' + (e.name === 'AbortError' ? 'délai dépassé' : e.message), 'err', 7000); }
-    finally { clearTimeout(to); busy.close(); }
+      const fresh = [];
+      for (const u of imgs) { const blob = await dataURLToBlob(u); const r = { url: URL.createObjectURL(blob), blob, added: false }; st.results.unshift(r); fresh.push(r); }
+      busy.close();
+      if (st.auto && st.mode !== 'composition') await this.useResult(fresh[0], st, m);
+      else { redraw(); toast(imgs.length + ' proposition(s) reçue(s).', 'ok'); }
+    } catch (e) { busy.close(); toast('Génération impossible : ' + (e.name === 'AbortError' ? 'délai dépassé' : e.message), 'err', 8000); }
+    finally { clearTimeout(to); }
   },
 };
 
@@ -3737,7 +3799,7 @@ async function boot() {
   if (!localStorage.getItem('inkbody.guide')) showGuide();
   setTimeout(gcImages, 5000);
   try { sessionStorage.removeItem('ibFix'); } catch (e) { /* */ }
-  window.InkBody = { S, App, Body, Engine, Decals, Hair, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
+  window.InkBody = { S, App, Body, Engine, Decals, Hair, AI, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
 }
 boot().catch((e) => { const l = document.getElementById('loader'); if (l) { const d = document.createElement('div'); d.className = 'muted'; d.style.cssText = 'max-width:460px;text-align:center;padding:0 16px'; d.textContent = 'Erreur au démarrage : ' + (e && e.message || e); l.appendChild(d); } });
 
