@@ -1772,8 +1772,11 @@ const App = {
       id: uid('tat_'), name: lib.name, status: 'project', libId: lib.id, imageId: lib.imageId, region, zone: zoneLabel(region, s.n, s.p), anchor,
       widthCm: +w.toFixed(1), heightCm: +hgt.toFixed(1), order: maxOrder + 1, mode: 'surface', refScale: { r: (Body.regionInfo[region] || {}).r || null, k: Body.k },
     });
-    S.tattoos.push(t); await Decals.build(t); this.select(t.id); Save.mark();
-    toast('Motif placé sur : ' + t.zone + '. Ajustez-le dans « Tatouage ».', 'ok');
+    S.tattoos.push(t); await Decals.build(t);
+    // une pose = un motif : on quitte le mode Placer pour éviter les doublons au toucher suivant
+    S.pendingLibId = null; setMode('move');
+    this.select(t.id); Save.mark();
+    toast('Motif placé sur : ' + t.zone + '. Mode Déplacer actif : glissez pour l\u2019ajuster.', 'ok', 4500);
   },
   update(t, changes, key = '', rebuild = true) {
     if (t.locked && !Object.keys(changes).every(k => ['locked', 'visible', 'note', 'status', 'name'].includes(k))) { toast('Ce motif est verrouillé.'); return; }
@@ -1938,6 +1941,8 @@ const Interact = {
     this.setRay(e);
     if (S.mode === 'measure') { const hit = Body.raycast(this.ray); if (hit) Measure.addPoint(hit); return; }
     if (S.mode === 'place' && S.pendingLibId) {
+      const onTattoo = Decals.pick(this.ray);
+      if (onTattoo) { App.select(onTattoo); return; }
       const lib = S.lib(S.pendingLibId); const hit = Body.raycast(this.ray);
       if (lib && hit) { App.addTattoo(lib, hit); return; }
       if (!hit) toast('Touchez directement la peau de l’avatar.');
