@@ -5,7 +5,7 @@
 
 const MAX_BODY = 14 * 1024 * 1024;
 const MAX_IMAGE = 4 * 1024 * 1024;
-const MODES = new Set(['motif', 'manchette', 'liaison', 'composition']);
+const MODES = new Set(['motif', 'manchette', 'ajouts', 'liaison', 'composition']);
 const day = () => new Date().toISOString().slice(0, 10);
 const counters = new Map(); // compteurs en mémoire (remis à zéro chaque jour / au redémarrage)
 const hits = new Map();     // anti-rafale : horodatages récents par IP
@@ -72,6 +72,7 @@ function instructions(mode, style, prompt, side, hasRefs) {
     motif: `Tattoo flash design, ${st} style. ${prompt}. One standalone artwork, black and grey ink only unless colours are requested, on a fully transparent background, crisp clean linework and shading, no skin, no body, no hands, no mockup, no text unless requested, no frame, no border.`,
     manchette: `Full arm sleeve tattoo design laid out as a single tall vertical stencil sheet (unrolled sleeve): the top of the image is the shoulder, the bottom is the wrist, ${side === 'l' ? 'left' : 'right'} arm. ${st} style. Theme: ${prompt}. Elements flow continuously from top to bottom with filler (ornamental scrolls, leaves, dotwork shading) so it reads as one cohesive sleeve, densest in the middle, tapering at the wrist. Black and grey ink only unless colours are requested, fully transparent background, no skin, no arm, no body, no mockup, no text, no frame.`,
     liaison: `This is a render of a 3D avatar with tattoos. Only paint inside the transparent area of the mask, on bare skin between the existing tattoos. Add ${st} tattoo connecting elements that link the existing designs: ${prompt || 'subtle ornamental links'}. Do not modify existing tattoos, the body shape, lighting or background.`,
+    ajouts: `The image is an UNROLLED tattoo stencil sheet of a ${side === 'l' ? 'left' : 'right'} arm on white paper: top edge = shoulder, bottom = hand, vertical centre line = outer arm, left and right edges = inner arm (they meet). The dark drawings already present are EXISTING tattoos on the client's skin: never redraw, move, restyle, extend or cover them. Draw ONLY NEW tattoo elements inside the transparent (editable) area of the mask, in ${st} style, as black and grey ink on the same white paper: ${prompt}. New elements must flow around the existing tattoos and stay clear of them, keep generous leaf shapes (no thin sparse twigs unless asked), with progressive shading. No skin, no body, no text, no frame; keep the white paper background.`,
     composition: `This is a render of a 3D avatar with tattoos. Only paint inside the transparent area of the mask, on bare skin. Suggest a ${st} tattoo composition for this free area: ${prompt || 'harmonious with the existing tattoos'}. Do not modify existing tattoos, the body shape, lighting or background.`,
   }[mode];
   return base + (hasRefs ? ' Match the drawing style of the reference tattoo images provided and reuse their motifs where it fits.' : '');
@@ -92,7 +93,7 @@ async function generate(req, res) {
   let refs, zone = null, mask = null;
   try {
     refs = (Array.isArray(body.references) ? body.references : []).slice(0, 3).map(decodeImage);
-    if (mode === 'liaison' || mode === 'composition') {
+    if (mode === 'liaison' || mode === 'composition' || mode === 'ajouts') {
       zone = decodeImage(body.zoneImage); mask = decodeImage(body.mask);
       if (mask.type !== 'image/png') throw new Error('Le masque doit être un PNG');
     }
@@ -101,7 +102,7 @@ async function generate(req, res) {
   const q = quota(clientIp(req), c); if (q) return send(res, 429, { error: q });
 
   const instr = instructions(mode, style, prompt, side, refs.length > 0);
-  const size = mode === 'manchette' ? '1024x1536' : '1024x1024';
+  const size = mode === 'manchette' || mode === 'ajouts' ? '1024x1536' : '1024x1024';
   const wantsAlpha = mode === 'motif' || mode === 'manchette';
   const call = async (model, alpha) => {
     if ((mode === 'motif' || mode === 'manchette') && !refs.length) {

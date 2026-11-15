@@ -1,6 +1,6 @@
 // InkBody — service worker : rend l'application utilisable hors ligne après un premier chargement complet.
 // Pensez à changer VERSION à chaque mise à jour du site pour renouveler le cache.
-const VERSION = 'inkbody-3.3.3';
+const VERSION = 'inkbody-3.4.0';
 const CORE = [
   './', './index.html', './manifest.webmanifest',
   './assets/lib/three.module.min.js', './assets/lib/three-mesh-bvh.module.js',

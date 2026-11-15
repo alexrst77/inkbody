@@ -71,3 +71,23 @@ La clé n'est **jamais** dans le site : elle se règle dans les variables Railwa
 Modes : **manchette complète** (planche verticale épaule → poignet, enroulée automatiquement autour du bras),
 **motif** (posé au centre de la vue), **compléter la zone visible** (vue + masque, tatouages existants protégés).
 Les images de référence ne partent qu'après accord explicite.
+
+
+## Ajouts IA autour de tatouages existants (v3.4)
+
+Problème corrigé : l'ancien mode « compléter la zone visible » envoyait une capture de l'avatar et recevait une
+nouvelle image du corps entier, qui réinterprétait les tatouages existants ; le masque n'était qu'une indication au modèle.
+
+Nouveau flux (`src/07-board.js`) :
+1. **Verrou** : un tatouage « Existant » est verrouillé par défaut (projets anciens compris) ; `update/moveTo/remove/nudge/reorder`
+   refusent toute modification, et l'image d'un tatouage protégé ne peut pas être réécrite.
+2. **Planche déroulée du bras**, calculée depuis les décals réels du projet (même repère que la projection « déroulée » des membres).
+   Masque de protection = emprise (ou encre seule en mode « espaces vides ») + marge réglable, hors main par défaut,
+   correction au pinceau ; les images sans transparence fiable sont protégées en entier.
+3. Le modèle reçoit planche + masque + références de style ; **seuls les nouveaux éléments sont extraits** : papier → transparent,
+   pixels sur l'existant ignorés, éléments tronqués rejetés, éléments empiétant décalés ou rejetés.
+4. Chaque élément devient un **calque indépendant** (mode `limb`), en aperçu : Valider / Annuler / Autre proposition ;
+   contrôle final de chevauchement sur l'empreinte réellement posée ; instantané SHA-256 des calques avant/après (restauration si écart).
+5. **Retouche** d'un ajout seul ; réponse tardive ignorée si le projet a changé ; exports transparent et fond blanc.
+
+Tests : `t32` (bureau, existants verrouillés) et `t34` (iPad, calques non marqués), modèle simulé qui modifie volontairement l'existant.

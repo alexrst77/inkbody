@@ -382,6 +382,8 @@ function toast(msg, type = '', ms = 3200) {
   $('#toasts').append(t);
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; setTimeout(() => t.remove(), 320); }, ms);
 }
+// export « fond blanc » d'une image de motif (pour récupérer le dessin)
+async function whiteBg(imageId) { const img = await Images.bitmap(imageId); const c = newCanvas(img.width, img.height), g = ctx2d(c); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0); return canvasToBlob(c); }
 function download(blob, name) {
   const url = URL.createObjectURL(blob);
   const a = h('a', { href: url, download: name });
@@ -473,6 +475,8 @@ function storageErrorMessage(e) {
 const Images = {
   cache: new Map(), // id -> {blob, url, bmp}
   async save(blob, meta = {}) {
+    // une image utilisée par un tatouage verrouillé n'est jamais réécrite (les ajouts reçoivent toujours de nouveaux identifiants)
+    if (meta.id && typeof S !== 'undefined' && S.project && S.project.variants.some(v => v.tattoos.some(t => t.imageId === meta.id && (t.locked || t.status === 'existing')))) throw new Error('Image d’un tatouage protégé : écriture refusée');
     const id = meta.id || uid('img_');
     await DB.put('images', { id, blob, type: blob.type, size: blob.size, w: meta.w || 0, h: meta.h || 0, createdAt: Date.now() });
     this.cache.set(id, { blob });
@@ -540,6 +544,8 @@ function migrateProject(p) {
 function normalizeTattoo(t) {
   const d = { name: 'Motif', status: 'project', zone: '', rotation: 0, widthCm: 10, heightCm: 10, lockRatio: true, flipX: false, flipY: false, opacity: 1, tint: null, locked: false, visible: true, order: 0, note: '', sizeMode: 'fixed', mode: 'planar', refScale: null };
   for (const k in d) if (t[k] === undefined) t[k] = d[k];
+  // un tatouage « Existant » est verrouillé par défaut (une seule fois : l'utilisateur peut ensuite le déverrouiller)
+  if (t.status === 'existing' && !t.lockInit) { t.locked = true; t.lockInit = 1; }
   return t;
 }
 function imageIdsOfProject(p) {
@@ -1557,8 +1563,8 @@ const Decals = {
     const B = Body.bones; if (!B) return null; const side = region.slice(-1);
     // l'axe est prolongé au-delà de l'épaule / de la hanche : une manchette peut monter sur le moignon de l'épaule
     const up = (bn, d) => bn.a.clone().addScaledVector(new THREE.Vector3().subVectors(bn.a, bn.b).normalize(), d * (Body.k || 1));
-    if (/^(upperarm|forearm)_/.test(region)) { const u = B['upperarm_' + side]; return { chain: [up(u, 0.09), u.a, u.b, B['forearm_' + side].b, B['hand_' + side].b], regions: ['upperarm_' + side, 'forearm_' + side, 'hand_' + side], cap: 'torso', capR: ((Body.regionInfo['upperarm_' + side] || {}).r || 0.05) * 1.9 }; }
-    if (/^(thigh|calf)_/.test(region)) { const u = B['thigh_' + side]; return { chain: [up(u, 0.05), u.a, u.b, B['calf_' + side].b, B['foot_' + side].b], regions: ['thigh_' + side, 'calf_' + side, 'foot_' + side], cap: null }; }
+    if (/^(upperarm|forearm|hand)_/.test(region)) { const u = B['upperarm_' + side]; return { chain: [up(u, 0.09), u.a, u.b, B['forearm_' + side].b, B['hand_' + side].b], regions: ['upperarm_' + side, 'forearm_' + side, 'hand_' + side], cap: 'torso', capR: ((Body.regionInfo['upperarm_' + side] || {}).r || 0.05) * 1.9 }; }
+    if (/^(thigh|calf|foot)_/.test(region)) { const u = B['thigh_' + side]; return { chain: [up(u, 0.05), u.a, u.b, B['calf_' + side].b, B['foot_' + side].b], regions: ['thigh_' + side, 'calf_' + side, 'foot_' + side], cap: null }; }
     return null;
   },
   /**
@@ -1566,22 +1572,29 @@ const Decals = {
    * L'axe suit la chaîne articulaire (le motif passe le coude/genou sans cassure) et le repère est transporté d'un segment
    * à l'autre. Les faces à cheval sur la couture sont dupliquées de part et d'autre : le tour est complet, sans trou.
    */
-  buildSweepPatch(opt) {
-    const P = Body.geom.attributes.position.array, N = Body.geom.attributes.normal.array, I = Body.index;
-    const { p, w, h, rot, flipX, flipY, startFace, eps } = opt; const chain = opt.chain;
+  // repère de déroulé d'un membre (partagé avec le plan « Board » de l'assistant IA : même géométrie, mêmes angles)
+  // segments de la chaîne, projection d'un point (segment le plus proche), repère radial e1 fixé par un point de référence et transporté
+  sweepFrame(chain, p, refDir) {
     const segs = []; let cum = 0;
     for (let i = 0; i < chain.length - 1; i++) { const a = chain[i], d = new THREE.Vector3().subVectors(chain[i + 1], a); const L = d.length(); if (L < 1e-5) continue; segs.push({ a, dir: d.multiplyScalar(1 / L), L, cum }); cum += L; }
     if (!segs.length) return null;
     const proj = (x, y, z) => { let best = null, bd = Infinity; for (let i = 0; i < segs.length; i++) { const sg = segs[i]; const qx = x - sg.a.x, qy = y - sg.a.y, qz = z - sg.a.z; const t = clamp(qx * sg.dir.x + qy * sg.dir.y + qz * sg.dir.z, 0, sg.L); const rx = qx - sg.dir.x * t, ry = qy - sg.dir.y * t, rz = qz - sg.dir.z * t; const d2 = rx * rx + ry * ry + rz * rz; if (d2 < bd) { bd = d2; best = { i, t, rx, ry, rz }; } } return best; };
-    // repère radial à l'ancre, transporté sur les autres segments
     const pa = proj(p.x, p.y, p.z); const e1 = new Array(segs.length), e2 = new Array(segs.length);
-    const r0 = new THREE.Vector3(pa.rx, pa.ry, pa.rz); const R0 = Math.max(r0.length(), 0.008); r0.normalize();
+    const r0 = new THREE.Vector3(pa.rx, pa.ry, pa.rz); const R0 = Math.max(r0.length(), 0.008);
+    if (refDir) { r0.copy(refDir).addScaledVector(segs[pa.i].dir, -refDir.dot(segs[pa.i].dir)); } r0.normalize();
     e1[pa.i] = r0;
     const carry = (from, to) => { const q = new THREE.Quaternion().setFromUnitVectors(segs[from].dir, segs[to].dir); const v = e1[from].clone().applyQuaternion(q); v.addScaledVector(segs[to].dir, -v.dot(segs[to].dir)).normalize(); e1[to] = v; };
     for (let i = pa.i + 1; i < segs.length; i++) carry(i - 1, i);
     for (let i = pa.i - 1; i >= 0; i--) carry(i + 1, i);
     for (let i = 0; i < segs.length; i++) e2[i] = new THREE.Vector3().crossVectors(e1[i], segs[i].dir); // droite de l'observateur, haut = vers l'épaule
-    const T0 = segs[pa.i].cum + pa.t;
+    const angle = (pr) => { const a = e1[pr.i], b = e2[pr.i]; return Math.atan2(pr.rx * b.x + pr.ry * b.y + pr.rz * b.z, pr.rx * a.x + pr.ry * a.y + pr.rz * a.z); };
+    return { segs, proj, pa, e1, e2, R0, T0: segs[pa.i].cum + pa.t, total: cum, angle };
+  },
+  buildSweepPatch(opt) {
+    const P = Body.geom.attributes.position.array, N = Body.geom.attributes.normal.array, I = Body.index;
+    const { p, w, h, rot, flipX, flipY, startFace, eps } = opt;
+    const F = this.sweepFrame(opt.chain, p); if (!F) return null;
+    const { segs, proj, pa, e1, e2, R0, T0 } = F;
     const rr = THREE.MathUtils.degToRad(rot || 0), cr = Math.cos(rr), sr = Math.sin(rr);
     const raw = (v) => { const pr = proj(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]); const a = e1[pr.i], b = e2[pr.i]; return [Math.atan2(pr.rx * b.x + pr.ry * b.y + pr.rz * b.z, pr.rx * a.x + pr.ry * a.y + pr.rz * a.z), -(segs[pr.i].cum + pr.t - T0)]; };
     const toUV = (phi, tt) => { const s0 = phi * R0; const s = s0 * cr + tt * sr, t2 = -s0 * sr + tt * cr; return [s / w + 0.5, t2 / h + 0.5]; };
@@ -1660,7 +1673,8 @@ const Decals = {
     }
     if (t.mode === 'surface' || (t.mode === 'wrap' && Body.isCustom)) opt.mode = 'surface';
     // bras et jambes : déroulé le long de l'axe du membre (tour complet, passage du coude/genou)
-    let limb = !Body.isCustom && (t.mode === 'surface' || t.mode === 'wrap') ? this.limbChain(t.region) : null;
+    let limb = !Body.isCustom && (t.mode === 'surface' || t.mode === 'wrap' || t.mode === 'limb') ? this.limbChain(t.region) : null;
+    if (t.mode === 'limb' && !limb) opt.mode = 'surface';
     if (limb && t.mode === 'surface') {
       // « épouse la peau » sur un membre : déroulé seulement si le motif fait une bonne partie du tour
       // et ne remonte pas sur l'épaule / la hanche (sinon la carte géodésique, qui passe sur le torse, est meilleure)
@@ -1989,13 +2003,15 @@ const App = {
     toast('Motif placé sur : ' + t.zone + '. Mode Déplacer actif : glissez pour l\u2019ajuster.', 'ok', 4500);
   },
   update(t, changes, key = '', rebuild = true) {
-    if (t.locked && !Object.keys(changes).every(k => ['locked', 'visible', 'note', 'status', 'name'].includes(k))) { toast('Ce motif est verrouillé.'); return; }
+    if (t.locked && !Object.keys(changes).every(k => ['locked', 'visible', 'note', 'status', 'name'].includes(k))) { toast('Ce motif est verrouillé.'); return false; }
     History.record(key ? t.id + key : '');
     Object.assign(t, changes);
+    if (changes.status === 'existing' && !t.locked && !t.lockInit) { t.locked = true; t.lockInit = 1; toast('Tatouage existant : verrouillé (déverrouillable à tout moment).'); }
     if (rebuild) Decals.build(t); else Engine.requestRender();
     Save.mark();
   },
   moveTo(t, hit) {
+    if (t.locked) return;
     const region = Body.regionName(hit.faceIndex);
     t.anchor = Body.anchorFromHit(hit.faceIndex, hit.point);
     const s = Body.surface(t.anchor);
@@ -2030,7 +2046,8 @@ const App = {
   reorder(id, dir) {
     const list = S.tattoos.slice().sort((a, b) => a.order - b.order); const i = list.findIndex(t => t.id === id); const j = i + dir;
     if (i < 0 || j < 0 || j >= list.length) return;
-    History.record(); [list[i], list[j]] = [list[j], list[i]]; list.forEach((t, k) => t.order = k + 1);
+    if (list[i].locked || list[j].locked) return toast('Motif verrouillé : son ordre ne change pas.');
+    History.record(); const o = list[i].order; list[i].order = list[j].order; list[j].order = o; // échange simple : les autres calques ne bougent pas
     this.rebuildAll(); UI.renderLayers(); UI.renderRight(); Save.mark();
   },
   lockExisting(lock) {
@@ -2293,6 +2310,7 @@ const UI = {
           h('button', { class: 'btn sm', onclick: () => Editor.openLibrary(cur) }, 'Retoucher / détourer'),
           h('button', { class: 'btn sm', onclick: () => Draw.open(cur) }, 'Estomper / compléter'),
           h('button', { class: 'btn sm', onclick: async () => download(await Images.blob(cur.imageId), slug(cur.name) + '.png') }, 'PNG'),
+          h('button', { class: 'btn sm', onclick: async () => download(await whiteBg(cur.imageId), slug(cur.name) + '-fond-blanc.png') }, 'PNG fond blanc'),
           h('button', { class: 'btn sm', onclick: () => { const n = prompt('Nom du motif :', cur.name); if (n) { History.record(); cur.name = n.trim().slice(0, 80); Save.mark(); this.renderLibrary(); } } }, 'Renommer'),
           h('button', { class: 'btn sm danger', onclick: () => App.removeLibrary(cur.id) }, 'Retirer'))));
     }
@@ -2311,7 +2329,7 @@ const UI = {
       const th = h('img', { class: 'th', alt: '' }); Images.url(t.imageId).then(u => th.src = u);
       const row = h('div', { class: 'layer' + (S.selectedId === t.id ? ' on' : '') + (t.visible ? '' : ' hid'), onclick: () => { App.select(t.id); this.flyToTattoo(t); } },
         th,
-        h('div', { class: 'meta' }, h('b', {}, t.name), h('small', {}, h('span', { class: 'badge ' + (t.status === 'existing' ? 'ex' : 'pr') }, t.status === 'existing' ? 'Existant' : 'Projet'), ' ', t.zone, ' · ', fmt(t.widthCm), '×', fmt(t.heightCm), ' cm')),
+        h('div', { class: 'meta' }, h('b', {}, t.name), h('small', {}, h('span', { class: 'badge ' + (t.status === 'existing' ? 'ex' : 'pr') }, t.status === 'existing' ? 'Existant' : 'Projet'), t.origin === 'ia' ? h('span', { class: 'badge pr' }, t.pending ? 'IA · aperçu' : 'IA') : '', t.locked ? ' 🔒' : '', ' ', t.zone, ' · ', fmt(t.widthCm), '×', fmt(t.heightCm), ' cm')),
         h('button', { class: 'btn sm icon ghost', title: t.visible ? 'Masquer' : 'Afficher', html: t.visible ? ICON.eye : ICON.eyeOff, onclick: (e) => { e.stopPropagation(); App.update(t, { visible: !t.visible }); this.renderLayers(); } }),
         h('button', { class: 'btn sm icon ghost', title: t.locked ? 'Déverrouiller' : 'Verrouiller', html: t.locked ? ICON.lock : ICON.unlock, onclick: (e) => { e.stopPropagation(); App.update(t, { locked: !t.locked }, '', false); Decals.updateOutline(); this.renderLayers(); this.renderRight(); } }));
       body.append(row);
@@ -2393,7 +2411,7 @@ const UI = {
       h('button', { class: 'btn sm' + (t.flipY ? ' on' : ''), disabled: dis, onclick: () => { set({ flipY: !t.flipY }); this.renderRight(); } }, 'Miroir ↕')));
     const canWrap = WRAP_REGIONS.has(t.region) && !Body.isCustom;
     rs.append(h('div', { class: 'muted', style: { margin: '4px 0 6px' } }, 'Projection'),
-      h('div', { class: 'seg' }, [['surface', 'Épouse la peau'], ['planar', 'Plane'], ['wrap', 'Enroulée']].map(([v, l]) => h('button', { class: v === t.mode ? 'on' : '', disabled: dis || (v === 'wrap' && !canWrap), onclick: () => { set({ mode: v }); this.renderRight(); } }, l))));
+      h('div', { class: 'seg' }, [['surface', 'Épouse la peau'], ['planar', 'Plane'], ['wrap', 'Enroulée'], ...(t.mode === 'limb' ? [['limb', 'Déroulée (bras)']] : [])].map(([v, l]) => h('button', { class: v === t.mode ? 'on' : '', disabled: dis || (v === 'wrap' && !canWrap), onclick: () => { set({ mode: v }); this.renderRight(); } }, l))));
     rs.append(h('div', { class: 'muted', style: { marginTop: '4px' } }, '« Épouse la peau » suit les courbures et peut passer d’une zone à l’autre. « Enroulée » fait le tour exact d’un membre (cou, tronc, bras, jambes). « Plane » imite un pochoir posé à plat.'));
     b.append(rs);
     // position
@@ -2418,6 +2436,8 @@ const UI = {
       h('button', { class: 'btn sm', onclick: () => { App.update(t, { locked: !t.locked }, '', false); Decals.updateOutline(); this.renderRight(); this.renderLayers(); } }, t.locked ? 'Déverrouiller' : 'Verrouiller'),
       h('button', { class: 'btn sm', onclick: () => { App.update(t, { visible: !t.visible }); this.renderRight(); this.renderLayers(); } }, t.visible ? 'Masquer' : 'Afficher'),
       h('button', { class: 'btn sm', onclick: async () => download(await Images.blob(t.imageId), slug(t.name) + '.png') }, 'Motif PNG'),
+      h('button', { class: 'btn sm', onclick: async () => download(await whiteBg(t.imageId), slug(t.name) + '-fond-blanc.png') }, 'PNG fond blanc'),
+      t.origin === 'ia' && !t.locked ? h('button', { class: 'btn sm primary', onclick: () => AI.open({ mode: 'retouche', targets: [t.id], side: /_l$/.test(t.region) ? 'l' : 'r', prompt: '' }) }, '✦ Retoucher cet ajout avec l’IA') : null,
       h('button', { class: 'btn sm', onclick: () => this.flyToTattoo(t) }, 'Centrer la vue')),
       h('button', { class: 'btn danger', style: { width: '100%', marginTop: '4px' }, disabled: t.locked, onclick: () => App.remove(t.id) }, 'Retirer de la simulation'),
       h('div', { class: 'muted', style: { marginTop: '6px' } }, 'Retire seulement le motif de l’avatar ; cela n’efface évidemment aucun vrai tatouage.')));
@@ -3703,6 +3723,7 @@ const VKeyboard = {
       keys.append(h('div', { style: { display: 'flex' } },
         key(alt ? 'ABC' : '123 é', () => { alt = !alt; draw(); }, 1.6), key('⇧', () => { shift = !shift; draw(); }, 1, shift),
         key('espace', () => { set(field.value + ' '); draw(); }, 4.5), key('⌫', () => { set(field.value.slice(0, -1)); draw(); }, 1.3),
+        key('📋', async () => { try { const tx = await navigator.clipboard.readText(); if (tx) { set(field.value + tx); draw(); } } catch (e) { toast('Collage refusé : touchez longuement le champ puis « Coller ».', 'err'); } }, 1),
         key('OK', () => box.remove(), 1.4, true)));
     };
     box.append(preview, keys); document.body.append(box); draw();
@@ -3726,14 +3747,23 @@ const AI = {
   get endpoint() { return localStorage.getItem('inkbody.ai.endpoint') || (/^https?:$/.test(location.protocol) && !/github\.io$/.test(location.hostname) ? location.origin + '/api/ai' : ''); },
   get accessCode() { return this._code != null ? this._code : (localStorage.getItem('inkbody.ai.code') || ''); },
   set accessCode(v) { this._code = v; },
-  st: null,
+  st: null, reqId: 0,
+  __place: (B, el) => placeBoardElement(B, el, { name: 'test', batch: 'test' }),
+  armHasTattoos(side) { const B = Board.frame(side); return !!(B && Board.tattoosOn(B).length); },
   open(preset) {
     const body = h('div');
-    const m = openModal({ title: 'Créer un tatouage avec l’IA', size: 'wide', body });
-    if (!this.st) this.st = { mode: 'manchette', side: 'r', prompt: '', style: 'réaliste noir et gris', refs: new Set(), results: [], auto: true, placed: null };
+    const m = openModal({ title: 'Créer avec l’IA', size: 'wide', body, onClose: () => { this.modal = null; } });
+    this.modal = m; this.bodyEl = body;
+    if (!this.st) {
+      const side = 'r';
+      this.st = { mode: this.armHasTattoos(side) ? 'ajouts' : 'manchette', side, prompt: '', style: 'réaliste noir et gris', refs: new Set(), results: [], auto: true, placed: null,
+        marginCm: 0.5, gaps: false, includeHand: false, edits: null, brush: 'protect', targets: null };
+    }
     if (preset) Object.assign(this.st, preset);
+    const saved = localStorage.getItem('inkbody.ai.prompt.' + this.st.mode); if (!this.st.prompt && saved) this.st.prompt = saved;
     this.render(body, m);
   },
+  savePrompt(st) { try { localStorage.setItem('inkbody.ai.prompt.' + st.mode, st.prompt); } catch (e) { /* stockage plein */ } },
   render(body, m) {
     body.innerHTML = '';
     const ep = this.endpoint, st = this.st;
@@ -3755,36 +3785,91 @@ const AI = {
     const form = h('div'); body.append(form, cfg);
     const draw = () => {
       form.innerHTML = '';
-      form.append(h('div', { class: 'sec' }, h('h4', {}, '1. Que créer ?'), UI.seg([['manchette', 'Manchette complète'], ['motif', 'Motif'], ['composition', 'Compléter la zone visible']], st.mode, (v) => { st.mode = v; draw(); })));
-      if (st.mode === 'manchette') form.append(h('div', { class: 'sec' }, h('h4', {}, 'Bras'), UI.seg([['r', 'Bras droit'], ['l', 'Bras gauche']], st.side, (v) => { st.side = v; draw(); }),
-        h('p', { class: 'muted' }, 'Le dessin est créé en planche verticale (haut = épaule, bas = poignet) puis enroulé automatiquement autour du bras.')));
-      if (st.mode === 'composition') form.append(h('div', { class: 'note' }, 'La vue actuelle de l’avatar est envoyée avec un masque : seule la peau libre est modifiable, les tatouages placés sont protégés. Cadrez la zone avant de lancer.'));
-      const ta = h('textarea', { class: 'inp', rows: 3, autocapitalize: 'sentences', enterkeyhint: 'done', style: { fontSize: '16px' }, placeholder: st.mode === 'manchette' ? 'Ex. : grande rose sur l’épaule, roi d’échecs sur le biceps, volutes baroques, fleurs sur l’avant-bras, rose sur le dos de la main' : 'Ex. : rose réaliste avec feuilles, ombrage doux', value: st.prompt, oninput: (e) => st.prompt = e.target.value.slice(0, 1000) });
+      const modes = st.mode === 'retouche' ? [['retouche', 'Retoucher les ajouts sélectionnés']] : [['ajouts', 'Compléter autour de mes tatouages'], ['motif', 'Motif seul'], ['manchette', 'Manchette complète']];
+      form.append(h('div', { class: 'sec' }, h('h4', {}, '1. Que créer ?'), UI.seg(modes, st.mode, (v) => { this.savePrompt(st); st.mode = v; st.prompt = localStorage.getItem('inkbody.ai.prompt.' + v) || ''; draw(); })));
+      if (st.mode !== 'motif') form.append(h('div', { class: 'sec' }, h('h4', {}, 'Bras'), UI.seg([['r', 'Bras droit'], ['l', 'Bras gauche']], st.side, (v) => { st.side = v; st.edits = null; draw(); }, st.mode === 'retouche')));
+      if (st.mode === 'manchette' && this.armHasTattoos(st.side)) {
+        form.append(h('div', { class: 'note warn' }, 'Ce bras porte déjà des tatouages : une manchette complète les recouvrirait. Utilisez « Compléter autour de mes tatouages » : l’IA ne crée alors que de nouveaux éléments, dans les espaces libres.'));
+      }
+      if (st.mode === 'ajouts' || st.mode === 'retouche') this.drawMaskSection(form, st);
+      const ta = h('textarea', { class: 'inp', rows: 4, autocapitalize: 'sentences', style: { fontSize: '16px' },
+        placeholder: st.mode === 'ajouts' ? 'Ex. : grande rose sur l’épaule, feuillage d’acanthe large et fourni autour du roi, liaison fluide au coude vers l’avant-bras, ombrages progressifs' : st.mode === 'retouche' ? 'Ex. : feuillage plus large et plus fourni' : st.mode === 'manchette' ? 'Ex. : grande rose sur l’épaule, roi d’échecs, volutes baroques…' : 'Ex. : rose réaliste avec feuilles, ombrage doux',
+        value: st.prompt, oninput: (e) => { st.prompt = e.target.value.slice(0, 1500); this.savePrompt(st); } });
+      const paste = h('button', { type: 'button', class: 'btn sm', onclick: async () => {
+        try { const tx = await navigator.clipboard.readText(); if (!tx) return toast('Presse-papiers vide.'); st.prompt = (st.prompt ? st.prompt + ' ' : '') + tx.slice(0, 1500); ta.value = st.prompt; this.savePrompt(st); }
+        catch (e) { toast('Collage refusé par le navigateur : touchez longuement le champ puis « Coller ».', 'err', 6000); }
+      } }, '📋 Coller');
+      const clear = h('button', { type: 'button', class: 'btn sm ghost', onclick: () => { st.prompt = ''; ta.value = ''; this.savePrompt(st); } }, 'Effacer');
       const styles = ['réaliste noir et gris', 'fine line', 'dotwork', 'blackwork', 'ornemental', 'traditionnel', 'néo-traditionnel', 'japonais', 'géométrique', 'aquarelle'];
-      // secours iPad : si le clavier ne s'ouvre pas (clavier physique, Apple Pencil/Griffonner, bug d'app écran d'accueil), saisie par la boîte système
-      const typeBtn = h('div', { style: { marginTop: '6px' } }, kbBtn(ta, (v) => st.prompt = v.slice(0, 1000), '⌨ Le clavier ne s’ouvre pas ? Clavier InkBody'));
-      form.append(h('div', { class: 'sec' }, h('h4', {}, '2. Votre idée'), ta, typeBtn, h('select', { class: 'inp', style: { marginTop: '8px' }, onchange: (e) => st.style = e.target.value }, styles.map(x => h('option', { selected: x === st.style }, x)))));
+      form.append(h('div', { class: 'sec' }, h('h4', {}, '2. Votre demande (gardée en mémoire)'), ta,
+        h('div', { class: 'row', style: { marginTop: '6px' } }, paste, kbBtn(ta, (v) => { st.prompt = v.slice(0, 1500); this.savePrompt(st); }, '⌨ Clavier InkBody'), clear),
+        h('select', { class: 'inp', style: { marginTop: '8px' }, onchange: (e) => st.style = e.target.value }, styles.map(x => h('option', { selected: x === st.style }, x)))));
       const refGrid = h('div', { class: 'lib', style: { marginBottom: '8px' } });
-      for (const l of S.project.library.slice(0, 24)) { const img = h('img'); Images.url(l.imageId).then(u => img.src = u); refGrid.append(h('button', { class: 'lib-item' + (st.refs.has(l.id) ? ' on' : ''), title: l.name, onclick: () => { st.refs.has(l.id) ? st.refs.delete(l.id) : st.refs.size < 3 && st.refs.add(l.id); draw(); } }, img)); }
-      form.append(h('div', { class: 'sec' }, h('h4', {}, '3. Motifs à reprendre (facultatif, 3 max)'), h('p', { class: 'muted' }, 'Ex. : votre rose ou votre roi d’échecs : l’IA reprend leur style et les intègre.'), S.project.library.length ? refGrid : h('p', { class: 'muted' }, 'Bibliothèque vide.')));
+      for (const l of S.project.library.slice(0, 30)) { const img = h('img'); Images.url(l.imageId).then(u => img.src = u); refGrid.append(h('button', { class: 'lib-item' + (st.refs.has(l.id) ? ' on' : ''), title: l.name, onclick: () => { st.refs.has(l.id) ? st.refs.delete(l.id) : st.refs.size < 3 && st.refs.add(l.id); draw(); } }, img)); }
+      form.append(h('div', { class: 'sec' }, h('h4', {}, '3. Références de style (facultatif, 3 max)'), h('p', { class: 'muted' }, st.mode === 'ajouts' || st.mode === 'retouche' ? 'Servent uniquement à guider le style. Vos tatouages existants sont déjà transmis depuis le projet, à leur vraie place.' : 'L’IA reprend leur style.'), S.project.library.length ? refGrid : h('p', { class: 'muted' }, 'Bibliothèque vide.')));
       const codeIn = h('input', { class: 'inp', type: 'password', autocomplete: 'off', style: { fontSize: '16px' }, placeholder: 'Code d’accès (ACCESS_CODE)', value: this.accessCode, oninput: (e) => this.accessCode = e.target.value });
       const remember = h('input', { type: 'checkbox', checked: localStorage.getItem('inkbody.ai.noremember') !== '1' });
-      const codeBtn = kbBtn(codeIn, (v) => this.accessCode = v.trim(), '⌨ Clavier');
-      form.append(h('div', { class: 'field' }, h('span', {}, 'Code d’accès'), h('div', { class: 'row' }, codeIn, codeBtn)), h('label', { class: 'chk' }, remember, 'Se souvenir du code sur cet appareil'));
-      if (st.mode !== 'composition') form.append(h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: st.auto, onchange: (e) => st.auto = e.target.checked }), 'Poser automatiquement le résultat sur l’avatar'));
-      form.append(h('button', { class: 'btn primary', style: { width: '100%', marginTop: '10px' }, onclick: () => {
+      form.append(h('div', { class: 'field' }, h('span', {}, 'Code d’accès'), h('div', { class: 'row' }, codeIn, kbBtn(codeIn, (v) => this.accessCode = v.trim(), '⌨'))), h('label', { class: 'chk' }, remember, 'Se souvenir du code sur cet appareil'));
+      const blocked = st.mode === 'manchette' && this.armHasTattoos(st.side);
+      form.append(h('button', { class: 'btn primary', disabled: blocked, style: { width: '100%', marginTop: '10px' }, onclick: () => {
         if (remember.checked && this.accessCode) { localStorage.setItem('inkbody.ai.code', this.accessCode); localStorage.removeItem('inkbody.ai.noremember'); } else { localStorage.removeItem('inkbody.ai.code'); localStorage.setItem('inkbody.ai.noremember', '1'); }
         this.prepare(st, draw, m);
-      } }, st.mode === 'manchette' ? 'Créer la manchette' : st.mode === 'motif' ? 'Créer le motif' : 'Créer la composition'));
-      if (st.results.length) {
-        const grid = h('div', { class: 'thumbs', style: { marginTop: '14px' } });
-        for (const r of st.results) grid.append(h('figure', {}, h('img', { src: r.url, style: { background: '#e9e4dc' } }), h('figcaption', {},
-          st.mode !== 'composition' ? h('button', { class: 'btn sm primary', onclick: () => this.useResult(r, st, m) }, r.placed ? 'Sur l’avatar ✓' : 'Essayer sur l’avatar') : null,
-          h('button', { class: 'btn sm', disabled: r.added, onclick: async () => { await this.toLibrary(r, st); draw(); toast('Ajouté à la bibliothèque.', 'ok'); } }, r.added ? 'Dans la bibliothèque' : 'Bibliothèque'))));
-        form.append(h('div', { class: 'sec' }, h('h4', {}, 'Propositions'), h('p', { class: 'muted' }, 'Touchez « Essayer sur l’avatar » pour remplacer le motif posé par une autre proposition.'), grid));
-      }
+      } }, { ajouts: 'Créer les ajouts', retouche: 'Retoucher', manchette: 'Créer la manchette', motif: 'Créer le motif' }[st.mode]));
+      if (st.mode === 'motif' || st.mode === 'manchette') { if (st.results.length) this.drawResults(form, st, m); }
     };
     draw();
+  },
+  // ---- aperçu et correction du masque de protection (calculé depuis les calques réels du projet)
+  drawMaskSection(form, st) {
+    const B = Board.frame(st.side);
+    if (!B) { form.append(h('div', { class: 'note warn' }, 'Disponible uniquement avec l’avatar InkBody (pas avec un modèle 3D importé).')); return; }
+    const box = h('div', { class: 'sec' }, h('h4', {}, 'Zones protégées (calculées depuis vos calques)'));
+    const others = st.mode === 'retouche' ? S.tattoos.filter(t => !(st.targets || []).includes(t.id)) : null;
+    const list = Board.tattoosOn(B, others || S.tattoos), nEx = list.filter(t => t.locked || t.status === 'existing').length;
+    const notEx = list.filter(t => !(t.locked || t.status === 'existing'));
+    if (notEx.length && st.mode === 'ajouts') box.append(h('div', { class: 'note' }, notEx.length + ' calque(s) de ce bras ne sont pas marqués « Existant » (ils sont tout de même protégés ici). S’ils sont déjà sur votre peau : ',
+      h('button', { class: 'btn sm primary', onclick: () => { for (const t of notEx) App.update(t, { status: 'existing' }, '', false); toast(notEx.length + ' calque(s) marqués existants et verrouillés.', 'ok'); this.render(this.bodyEl, this.modal); } }, 'Les marquer existants et verrouiller')));
+    box.append(h('p', { class: 'muted' }, nEx + ' tatouage(s) existant(s) verrouillé(s) et ' + (list.length - nEx) + ' autre(s) calque(s) sur ce bras. Rouge = interdit à l’IA. Planche déroulée : haut = épaule, bas = main, centre = face externe, bords = intérieur du bras.'));
+    const view = newCanvas(BOARD_W / 4, BOARD_H / 4); view.style.cssText = 'width:256px;height:384px;border-radius:8px;touch-action:none;background:#fff;display:block;margin:6px auto';
+    let M = null;
+    const redraw = () => {
+      let free = null;
+      if (st.mode === 'retouche') { free = newCanvas(BOARD_W, BOARD_H); const tg = S.tattoos.filter(t => (st.targets || []).includes(t.id)); Board.render(B, tg, 'foot', ctx2d(free)); free = dilate(binarize(free, 20), Math.round(0.02 / B.mpp)); }
+      M = Board.masks(B, { marginCm: st.marginCm, gaps: st.gaps, includeHand: st.includeHand, edits: st.edits, protectList: list, free });
+      st._M = M; st._B = B;
+      const g = ctx2d(view); g.fillStyle = '#fff'; g.fillRect(0, 0, view.width, view.height);
+      g.drawImage(M.ink, 0, 0, view.width, view.height);
+      if (st.mode === 'retouche') g.drawImage(Board.render(B, S.tattoos.filter(t => (st.targets || []).includes(t.id)), 'ink'), 0, 0, view.width, view.height);
+      const red = newCanvas(BOARD_W, BOARD_H), rg = ctx2d(red); rg.drawImage(M.protect, 0, 0); rg.globalCompositeOperation = 'source-in'; rg.fillStyle = 'rgba(214,60,60,0.38)'; rg.fillRect(0, 0, BOARD_W, BOARD_H);
+      g.drawImage(red, 0, 0, view.width, view.height);
+      warn.textContent = M.opaque.length ? '« ' + M.opaque.map(t => t.name).join(' », « ') + ' » n’a pas de transparence fiable : toute son emprise est protégée. Corrigez au pinceau si besoin.' : '';
+    };
+    const warn = h('div', { class: 'muted', style: { color: 'var(--acc)' } });
+    // pinceau : protéger / libérer (l'encre existante reste protégée dans tous les cas)
+    let painting = false;
+    const paint = (e) => {
+      const r = view.getBoundingClientRect(); const x = (e.clientX - r.left) / r.width * BOARD_W, y = (e.clientY - r.top) / r.height * BOARD_H;
+      if (!st.edits) st.edits = newCanvas(BOARD_W, BOARD_H);
+      const g = ctx2d(st.edits); g.fillStyle = st.brush === 'protect' ? 'rgba(255,0,0,1)' : 'rgba(0,255,0,1)'; g.globalCompositeOperation = 'source-over';
+      g.beginPath(); g.arc(x, y, 0.012 / B.mpp, 0, Math.PI * 2); g.fill();
+    };
+    view.addEventListener('pointerdown', (e) => { painting = true; view.setPointerCapture(e.pointerId); paint(e); });
+    view.addEventListener('pointermove', (e) => { if (painting) paint(e); });
+    view.addEventListener('pointerup', () => { painting = false; redraw(); });
+    box.append(view, warn,
+      (() => { const holder = h('div', { class: 'row' }); const mk = () => { holder.innerHTML = ''; holder.append(UI.seg([['protect', 'Pinceau : protéger'], ['free', 'Pinceau : libérer']], st.brush, (v) => { st.brush = v; mk(); })); }; mk(); return holder; })(),
+      h('div', { class: 'row' }, h('button', { class: 'btn sm ghost', onclick: () => { st.edits = null; redraw(); } }, 'Annuler les corrections')),
+      UI.slider('Marge autour des tatouages', st.marginCm, 0, 3, 0.1, (v, done) => { st.marginCm = v; if (done) redraw(); }, { format: (v) => fmt(v) + ' cm' }),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: st.gaps, onchange: (e) => { st.gaps = e.target.checked; redraw(); } }), 'Autoriser les ajouts dans les espaces vides entre les éléments (seule l’encre est protégée)'),
+      h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: st.includeHand, onchange: (e) => { st.includeHand = e.target.checked; redraw(); } }), 'Autoriser des ajouts sur la main'));
+    form.append(box); setTimeout(redraw, 30);
+  },
+  drawResults(form, st, m) {
+    const grid = h('div', { class: 'thumbs', style: { marginTop: '14px' } });
+    for (const r of st.results) grid.append(h('figure', {}, h('img', { src: r.url, style: { background: '#e9e4dc' } }), h('figcaption', {},
+      h('button', { class: 'btn sm primary', onclick: () => this.useResult(r, st, m) }, r.placed ? 'Sur l’avatar ✓' : 'Essayer sur l’avatar'),
+      h('button', { class: 'btn sm', disabled: r.added, onclick: async () => { await this.toLibrary(r, st); toast('Ajouté à la bibliothèque.', 'ok'); } }, r.added ? 'Dans la bibliothèque' : 'Bibliothèque'))));
+    form.append(h('div', { class: 'sec' }, h('h4', {}, 'Propositions'), grid));
   },
   async toLibrary(r, st) {
     if (r.lib) return r.lib;
@@ -3796,47 +3881,37 @@ const AI = {
   async useResult(r, st, m) {
     const lib = await this.toLibrary(r, st);
     const prev = st.placed && S.tattoos.find(t => t.id === st.placed);
-    if (prev) App.remove ? App.remove(prev.id) : null;
+    if (prev && !prev.locked) App.remove(prev.id);
     const t = await App.autoPlace(lib, st.mode === 'manchette' ? { kind: 'sleeve', side: st.side } : { kind: 'view' });
-    if (t) { st.placed = t.id; st.results.forEach(x => x.placed = x === r); m && m.close(); toast(st.mode === 'manchette' ? 'Manchette posée sur le bras ' + (st.side === 'l' ? 'gauche' : 'droit') + '. Rouvrez « IA » pour essayer une autre proposition.' : 'Motif posé au centre de la vue.', 'ok', 6000); }
-  },
-  async capture() {
-    // vue cadrée + masque (transparent = peau libre modifiable)
-    const size = 1024;
-    const img = Engine.renderOffscreen({ width: size, height: size });
-    const swaps = [];
-    const swap = (mesh, mat) => { swaps.push([mesh, mesh.material]); mesh.material = mat; };
-    const white = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    swap(Body.mesh, white);
-    for (const r of Decals.objects.values()) swap(r.mesh, new THREE.MeshBasicMaterial({ color: 0x000000, map: r.mesh.material.map, transparent: true, alphaTest: 0.15, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
-    const hid = [Hair.hair, Hair.strands, Hair.bun, Hair.beard, Face.mesh, ...Object.values(Proxies.meshes)].filter(Boolean); hid.forEach(o => o.visible = false);
-    const tm = Engine.renderer.toneMapping; Engine.renderer.toneMapping = THREE.NoToneMapping;
-    let mask;
-    try { mask = Engine.renderOffscreen({ width: size, height: size, background: '#000000' }); }
-    finally { Engine.renderer.toneMapping = tm; swaps.forEach(([mm, mat]) => { if (mm.material !== white) mm.material.dispose(); mm.material = mat; }); white.dispose(); hid.forEach(o => o.visible = true); Engine.requestRender(); }
-    const g = ctx2d(mask), d = g.getImageData(0, 0, size, size); const a = d.data;
-    for (let i = 0; i < a.length; i += 4) { const free = a[i] > 200 && a[i + 1] > 200; a[i] = a[i + 1] = a[i + 2] = 0; a[i + 3] = free ? 0 : 255; }
-    g.putImageData(d, 0, 0);
-    return { img, mask };
+    if (t) { st.placed = t.id; st.results.forEach(x => x.placed = x === r); m && m.close(); toast(st.mode === 'manchette' ? 'Manchette posée sur le bras ' + (st.side === 'l' ? 'gauche' : 'droit') + '.' : 'Motif posé au centre de la vue.', 'ok', 6000); }
   },
   async prepare(st, redraw, m) {
     if (!this.endpoint) return toast('Aucun service IA configuré.', 'err');
-    if (!st.prompt.trim() && st.mode !== 'composition') return toast('Décrivez votre idée.');
+    if (!st.prompt.trim()) return toast('Décrivez ce que vous voulez ajouter.');
     if (!this.accessCode) return toast('Entrez le code d’accès (ACCESS_CODE défini dans Railway).');
-    const send = { mode: st.mode, side: st.side, prompt: st.prompt.trim(), style: st.style, references: [], n: 2 };
+    const send = { mode: st.mode === 'retouche' ? 'ajouts' : st.mode, side: st.side, prompt: st.prompt.trim(), style: st.style, references: [], n: 2 };
     const previews = [];
-    for (const id of st.refs) { const l = S.lib(id); if (!l) continue; const c = imageToCanvas(await Images.bitmap(l.imageId), 1024); const u = c.toDataURL('image/png'); send.references.push(u); previews.push([l.name, u]); }
-    if (st.mode === 'composition') { const { img, mask } = await this.capture(); send.zoneImage = img.toDataURL('image/png'); send.mask = mask.toDataURL('image/png'); previews.unshift(['Vue de la zone', send.zoneImage], ['Masque (zones libres)', send.mask]); }
-    if (!previews.length) return this.call(send, st, redraw, m); // texte seul : aucune image envoyée
+    for (const id of st.refs) { const l = S.lib(id); if (!l) continue; const c = imageToCanvas(await Images.bitmap(l.imageId), 1024); const u = c.toDataURL('image/png'); send.references.push(u); previews.push([l.name + ' (style)', u]); }
+    let ctx = null;
+    if (st.mode === 'ajouts' || st.mode === 'retouche') {
+      const B = st._B || Board.frame(st.side), M = st._M; if (!B || !M) return toast('Planche du bras indisponible.', 'err');
+      const io = Board.modelInputs(B, M);
+      send.zoneImage = io.image.toDataURL('image/png'); send.mask = io.mask.toDataURL('image/png');
+      if (st.mode === 'retouche') send.prompt = 'Modify ONLY the elements inside the editable area: ' + send.prompt;
+      previews.unshift(['Planche du bras (vos calques réels)', send.zoneImage], ['Masque : noir = protégé', send.mask]);
+      ctx = { B, M, side: st.side, mode: st.mode, targets: (st.targets || []).slice(), targetsSnap: JSON.stringify(S.tattoos.filter(t => (st.targets || []).includes(t.id))) };
+    }
+    if (!previews.length) return this.call(send, st, redraw, m, ctx);
     let consent = false;
-    const grid = h('div', { class: 'thumbs' }, previews.map(([n, u]) => h('figure', {}, h('img', { src: u }), h('figcaption', {}, n))));
+    const grid = h('div', { class: 'thumbs' }, previews.map(([n, u]) => h('figure', {}, h('img', { src: u, style: { background: '#fff' } }), h('figcaption', {}, n))));
     openModal({ title: 'Images envoyées au service', size: 'wide', body: h('div', {},
-      h('p', {}, 'Ces images seront transmises au service IA puis au fournisseur (OpenAI) :'), grid,
+      h('p', {}, 'Ces images seront transmises au service IA puis au fournisseur (OpenAI). Le résultat ne remplace jamais vos tatouages : seuls de nouveaux éléments contrôlés sont posés, en aperçu.'), grid,
       h('label', { class: 'chk', style: { marginTop: '12px' } }, h('input', { type: 'checkbox', onchange: (e) => consent = e.target.checked }), 'J’autorise l’envoi de ces images.')),
-      actions: [{ label: 'Envoyer', cls: 'primary', onClick: async (close) => { if (!consent) return toast('Cochez l’autorisation d’envoi.'); close(); await this.call(send, st, redraw, m); } }] });
+      actions: [{ label: 'Envoyer', cls: 'primary', onClick: async (close) => { if (!consent) return toast('Cochez l’autorisation d’envoi.'); close(); await this.call(send, st, redraw, m, ctx); } }] });
   },
-  async call(send, st, redraw, m) {
-    const busy = Busy.show(st.mode === 'manchette' ? 'Création de la manchette (jusqu’à 2 minutes)…' : 'Génération en cours (jusqu’à 1 minute)…');
+  async call(send, st, redraw, m, ctx) {
+    const my = ++this.reqId, projectId = S.project.id, variantId = S.project.activeVariantId;
+    const busy = Busy.show(st.mode === 'manchette' ? 'Création de la manchette (jusqu’à 2 minutes)…' : st.mode === 'motif' ? 'Génération en cours (jusqu’à 1 minute)…' : 'Création des ajouts (jusqu’à 2 minutes)…');
     const ctrl = new AbortController(); const to = setTimeout(() => ctrl.abort(), 260000);
     try {
       const res = await fetch(this.endpoint + '/generate', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Access-Code': this.accessCode }, body: JSON.stringify(send), signal: ctrl.signal });
@@ -3844,13 +3919,79 @@ const AI = {
       if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
       const imgs = (j.images || []).filter(u => typeof u === 'string' && /^data:image\/(png|webp|jpeg);base64,/.test(u));
       if (!imgs.length) throw new Error('aucune image reçue');
-      const fresh = [];
-      for (const u of imgs) { const blob = await dataURLToBlob(u); const r = { url: URL.createObjectURL(blob), blob, added: false }; st.results.unshift(r); fresh.push(r); }
       busy.close();
-      if (st.auto && st.mode !== 'composition') await this.useResult(fresh[0], st, m);
+      // réponse tardive : une demande plus récente, un autre projet ou une autre variante → ignorée (rien n'est écrasé)
+      if (my !== this.reqId || S.project.id !== projectId || S.project.activeVariantId !== variantId) { toast('Réponse IA ignorée : le projet a changé entre-temps.', 'warn', 6000); return; }
+      const results = [];
+      for (const u of imgs) { const blob = await dataURLToBlob(u); results.push({ url: URL.createObjectURL(blob), blob, added: false }); }
+      if (ctx) { await this.applyAdditions(results, 0, st, ctx, m); return; }
+      st.results.unshift(...results);
+      if (st.auto) await this.useResult(results[0], st, m);
       else { redraw(); toast(imgs.length + ' proposition(s) reçue(s).', 'ok'); }
     } catch (e) { busy.close(); toast('Génération impossible : ' + (e.name === 'AbortError' ? 'délai dépassé' : e.message), 'err', 8000); }
     finally { clearTimeout(to); }
+  },
+  // ---- ajouts : extraction, contrôle, pose en calques « aperçu » (jamais de modification des calques existants)
+  async applyAdditions(results, idx, st, ctx, m) {
+    const busy = Busy.show('Extraction et contrôle des ajouts…');
+    try {
+      if (ctx.mode === 'retouche') { // les calques ciblés doivent être inchangés depuis l'envoi
+        const now = JSON.stringify(S.tattoos.filter(t => ctx.targets.includes(t.id)));
+        if (now !== ctx.targetsSnap) { busy.close(); return toast('Les ajouts ciblés ont été modifiés entre-temps : résultat ignoré pour ne rien écraser.', 'warn', 7000); }
+      }
+      this.cancelPreview(true);
+      const snap = await lockedSnapshot(true, ctx.targets); // tous les calques déjà présents (hors ajouts ciblés par une retouche)
+      const img = await blobToImage(results[idx].blob);
+      const { kept, rejected } = extractAdditions(ctx.B, ctx.M, img);
+      const batch = uid('ia_');
+      History.record();
+      const placed = [], lost = [];
+      for (let k = 0; k < kept.length; k++) { const t = await placeBoardElement(ctx.B, kept[k], { name: 'Ajout IA ' + (k + 1), batch, note: st.prompt.slice(0, 200) }); if (t) placed.push(t); else lost.push(kept[k]); }
+      // contrôle final sur l'empreinte réelle posée : tout calque qui empiète est retiré (le masque envoyé au modèle n'est pas une garantie)
+      const bad = [];
+      for (const t of placed) { const r = overlapReport(ctx.B, [t], ctx.M.protect); t._ov = r; if (r.over > Math.max(6, r.total * 0.004)) bad.push(t); }
+      for (const t of bad) { S.variant.tattoos = S.tattoos.filter(x => x.id !== t.id); Decals.remove(t.id); }
+      const ok = placed.filter(t => !bad.includes(t));
+      if (ctx.mode === 'retouche') for (const id of ctx.targets) { const t = S.tattoos.find(x => x.id === id); if (t) { t.visible = false; Decals.build(t); } }
+      // ceinture et bretelles : les calques protégés doivent être strictement identiques
+      const after = await lockedSnapshot(true, [...ctx.targets, ...ok.map(t => t.id), ...bad.map(t => t.id)]);
+      if (!sameSnapshot(snap, after)) { restoreLocked(snap); toast('Écart détecté sur un tatouage protégé : il a été restauré à l’identique.', 'err', 8000); }
+      this.preview = { batch, ids: ok.map(t => t.id), results, idx, st, ctx, rejected: rejected.length + bad.length + lost.length, kept: ok.length, why: [...rejected.map(r => r.reason), ...bad.map((t) => 'empiète après pose (' + t._ov.over + '/' + t._ov.total + ' px, ' + t.widthCm + '×' + t.heightCm + ' cm)'), ...lost.map(() => 'hors du bras')] };
+      busy.close(); m && m.close(); Save.mark(); UI.refreshAll(); this.showPreviewBar();
+      if (!ok.length) toast('Aucun ajout exploitable dans ce résultat (tout empiétait ou redessinait l’existant). Essayez « Autre proposition » ou reformulez.', 'warn', 8000);
+    } catch (e) { busy.close(); toast('Extraction impossible : ' + e.message, 'err', 8000); }
+  },
+  showPreviewBar() {
+    document.querySelectorAll('.ia-bar').forEach(n => n.remove()); const P = this.preview; if (!P) return;
+    const bar = h('div', { class: 'ia-bar', style: { position: 'fixed', left: '50%', transform: 'translateX(-50%)', top: '64px', zIndex: '900', background: '#1d1c22', border: '1px solid #c9a46a', borderRadius: '12px', padding: '10px 12px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', maxWidth: '96vw', boxShadow: '0 8px 30px rgba(0,0,0,.5)' } },
+      h('b', {}, 'Aperçu IA : ' + P.kept + ' ajout(s)' + (P.rejected ? ' · ' + P.rejected + ' rejeté(s)' : '')),
+      h('button', { class: 'btn sm primary', onclick: () => this.validatePreview() }, 'Valider'),
+      h('button', { class: 'btn sm', onclick: () => this.cancelPreview() }, 'Annuler'),
+      P.results.length > 1 ? h('button', { class: 'btn sm', onclick: () => this.applyAdditions(P.results, (P.idx + 1) % P.results.length, P.st, P.ctx, null) }, 'Autre proposition') : null,
+      h('button', { class: 'btn sm ghost', onclick: () => this.exportAdditions(false) }, 'PNG transparent'),
+      h('button', { class: 'btn sm ghost', onclick: () => this.exportAdditions(true) }, 'PNG fond blanc'));
+    document.body.append(bar);
+  },
+  validatePreview() {
+    const P = this.preview; if (!P) return;
+    History.record();
+    for (const t of S.tattoos) if (P.ids.includes(t.id)) t.pending = false;
+    if (P.ctx.mode === 'retouche') { S.variant.tattoos = S.tattoos.filter(t => !P.ctx.targets.includes(t.id)); P.ctx.targets.forEach(id => Decals.remove(id)); }
+    this.preview = null; document.querySelectorAll('.ia-bar').forEach(n => n.remove()); Save.mark(); UI.refreshAll(); toast('Ajouts validés : calques indépendants (sélection, déplacement, taille, masquage, suppression).', 'ok', 6000);
+  },
+  cancelPreview(silent) {
+    const P = this.preview; if (!P) return;
+    S.variant.tattoos = S.tattoos.filter(t => !P.ids.includes(t.id)); P.ids.forEach(id => Decals.remove(id));
+    if (P.ctx.mode === 'retouche') for (const id of P.ctx.targets) { const t = S.tattoos.find(x => x.id === id); if (t) { t.visible = true; Decals.build(t); } }
+    this.preview = null; document.querySelectorAll('.ia-bar').forEach(n => n.remove()); Save.mark(); UI.refreshAll(); if (!silent) toast('Ajouts annulés : état précédent restauré.');
+  },
+  exportAdditions(white) {
+    const P = this.preview; const ids = P ? P.ids : S.tattoos.filter(t => t.origin === 'ia' && t.visible).map(t => t.id);
+    const B = (P && P.ctx.B) || Board.frame((this.st && this.st.side) || 'r'); if (!B) return;
+    const c = Board.render(B, S.tattoos.filter(t => ids.includes(t.id)), 'ink');
+    const out = newCanvas(B.bw + 40, BOARD_H), g = ctx2d(out); if (white) { g.fillStyle = '#fff'; g.fillRect(0, 0, out.width, out.height); }
+    g.drawImage(c, B.bx0 - 20, 0, B.bw + 40, BOARD_H, 0, 0, B.bw + 40, BOARD_H);
+    out.toBlob((b) => download(b, 'inkbody-ajouts-' + (white ? 'fond-blanc' : 'transparent') + '.png'), 'image/png');
   },
 };
 
@@ -3953,9 +4094,235 @@ async function boot() {
   if (!localStorage.getItem('inkbody.guide')) showGuide();
   setTimeout(gcImages, 5000);
   try { sessionStorage.removeItem('ibFix'); } catch (e) { /* */ }
-  window.InkBody = { S, App, Body, Engine, Decals, Hair, Proxies, AI, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
+  window.InkBody = { S, App, Body, Engine, Decals, Hair, Proxies, AI, Board, lockedSnapshot, overlapReport, Save, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
 }
 boot().catch((e) => { const l = document.getElementById('loader'); if (l) { const d = document.createElement('div'); d.className = 'muted'; d.style.cssText = 'max-width:460px;text-align:center;padding:0 16px'; d.textContent = 'Erreur au démarrage : ' + (e && e.message || e); l.appendChild(d); } });
+
+// ================================================================ Plan déroulé d'un bras (« planche ») et ajouts IA
+// Pourquoi : l'ancien mode « compléter » envoyait une capture de l'avatar et recevait une nouvelle image du corps entier,
+// qui réinterprétait les tatouages existants. Ici, la planche est calculée à partir des VRAIS calques du projet
+// (géométrie des décals + leurs images), dans le même repère que la projection « déroulée » des membres.
+// Le modèle ne fournit que de l'inspiration graphique : seuls des éléments nouveaux, extraits, contrôlés
+// et posés comme calques indépendants arrivent sur l'avatar. Les tatouages verrouillés ne sont jamais modifiés.
+
+const BOARD_W = 1024, BOARD_H = 1536;
+
+const Board = {
+  // repère d'un bras : chaîne épaule (prolongée) → coude → poignet → main ; φ = 0 sur la face externe
+  frame(side) {
+    if (Body.isCustom || !Body.bones) return null;
+    const sd = side === 'l' ? 'l' : 'r';
+    const limb = Decals.limbChain('upperarm_' + sd); if (!limb) return null;
+    const u = Body.bones['upperarm_' + sd];
+    const out = new THREE.Vector3(Math.sign(u.a.x) || (sd === 'l' ? 1 : -1), 0, 0.3).normalize(); // vers l'extérieur, un peu vers l'avant
+    const F = Decals.sweepFrame(limb.chain, u.a.clone().lerp(u.b, 0.5), out); if (!F) return null;
+    const Rref = (Body.regionInfo['upperarm_' + sd] || {}).r || 0.045;
+    const mpp = F.total / BOARD_H;                                   // mètres par pixel (vertical)
+    const bw = Math.min(BOARD_W - 16, Math.round(2 * Math.PI * Rref / mpp)); // tour complet du bras (largeur au biceps)
+    const bx0 = Math.round((BOARD_W - bw) / 2);
+    const wristAlong = F.segs.length >= 4 ? F.segs[3].cum : F.total;
+    return { side: sd, limb, F, mpp, bw, bx0, radPerPx: 2 * Math.PI / bw, wristAlong, regions: new Set(limb.regions.map(r => Body.regionNames.indexOf(r))) };
+  },
+  coords(B, x, y, z) { const pr = B.F.proj(x, y, z); return { phi: B.F.angle(pr), along: B.F.segs[pr.i].cum + pr.t, r: Math.hypot(pr.rx, pr.ry, pr.rz), pr }; },
+  toPx(B, phi, along) { return [B.bx0 + (phi / (2 * Math.PI) + 0.5) * B.bw, along / B.mpp]; },
+  // point de peau correspondant à (φ, le long) : point le plus proche d'un point situé juste sous la peau
+  surfaceAt(B, phi, along) {
+    const segs = B.F.segs; let i = segs.length - 1; for (let k = 0; k < segs.length; k++) if (along < segs[k].cum + segs[k].L) { i = k; break; }
+    const sg = segs[i]; const ax = sg.a.clone().addScaledVector(sg.dir, clamp(along - sg.cum, 0, sg.L));
+    const dir = B.F.e1[i].clone().multiplyScalar(Math.cos(phi)).addScaledVector(B.F.e2[i], Math.sin(phi));
+    const R = (Body.regionInfo[Body.regionNames[0]] && 0) || 0.022; // sous la peau (rayon minimal d'un poignet)
+    return Body.closest(ax.addScaledVector(dir, R));
+  },
+  // tatouages visibles posés sur ce bras (zone du bras, ou moignon de l'épaule près de l'axe)
+  tattoosOn(B, list = S.tattoos) {
+    return list.filter(t => t.visible && Decals.objects.get(t.id) && (B.limb.regions.includes(t.region) || (t.region === 'torso' && (() => { const s = Body.resolve(t.anchor); if (!s) return false; const c = this.coords(B, s.p.x, s.p.y, s.p.z); return c.along < B.F.segs[0].L + 0.02 && c.r < 0.12; })())));
+  },
+  // dessine des calques sur la planche : 'ink' = image réelle (alpha), 'foot' = emprise pleine du motif
+  render(B, tattoos, kind = 'ink', ctx = null) {
+    const c = ctx ? ctx.canvas : newCanvas(BOARD_W, BOARD_H); const g = ctx || ctx2d(c);
+    const solid = newCanvas(4, 4); { const sg = ctx2d(solid); sg.fillStyle = '#000'; sg.fillRect(0, 0, 4, 4); }
+    for (const t of tattoos.slice().sort((a, b) => a.order - b.order)) {
+      const rec = Decals.objects.get(t.id); if (!rec || !rec.mesh.visible) continue;
+      const geo = rec.mesh.geometry, P = geo.attributes.position.array, U = geo.attributes.uv.array, I = geo.index ? geo.index.array : null;
+      const img = kind === 'ink' ? rec.mesh.material.map && rec.mesh.material.map.image : solid; if (!img) continue;
+      const iw = img.width, ih = img.height; g.globalAlpha = kind === 'ink' ? t.opacity : 1;
+      const n = I ? I.length / 3 : P.length / 9;
+      for (let f = 0; f < n; f++) {
+        const ids = I ? [I[f * 3], I[f * 3 + 1], I[f * 3 + 2]] : [f * 3, f * 3 + 1, f * 3 + 2];
+        const cs = ids.map(v => this.coords(B, P[v * 3], P[v * 3 + 1], P[v * 3 + 2]));
+        if (cs.some(q => q.r > 0.13)) continue;
+        const ph = cs.map(q => q.phi); const seam = Math.max(...ph) - Math.min(...ph) > Math.PI; if (seam) for (let k = 0; k < 3; k++) if (ph[k] < 0) ph[k] += 2 * Math.PI;
+        const dst = cs.map((q, k) => this.toPx(B, ph[k], q.along));
+        const src = ids.map(v => [U[v * 2] * iw, (1 - U[v * 2 + 1]) * ih]);
+        for (const sh of seam ? [0, -B.bw] : [0]) drawTexturedTri(g, img, src, dst.map(([x, y]) => [x + sh, y])); // triangle à cheval sur la couture : dessiné des deux côtés
+      }
+      g.globalAlpha = 1;
+    }
+    return c;
+  },
+  // masques : 'core' (encre ou emprise exactes), 'protect' (core + marge + hors planche + main + corrections)
+  masks(B, opt = {}) {
+    const protectedList = opt.protectList || this.tattoosOn(B);
+    const ink = this.render(B, protectedList, 'ink');
+    const foot = this.render(B, protectedList, 'foot');
+    // images sans transparence fiable : toute leur emprise est protégée, même en mode « espaces vides »
+    const opaque = protectedList.filter(t => Decals.objects.get(t.id) && imageOpaqueRatio(Decals.objects.get(t.id).mesh.material.map) > 0.97);
+    const core = newCanvas(BOARD_W, BOARD_H), cg = ctx2d(core);
+    if (opt.gaps) { cg.drawImage(ink, 0, 0); if (opaque.length) this.render(B, opaque, 'foot', cg); } else cg.drawImage(foot, 0, 0);
+    binarize(core, 20);
+    const marginPx = Math.round((opt.marginCm != null ? opt.marginCm : 0.5) / 100 / B.mpp);
+    const prot = dilate(core, marginPx), pg = ctx2d(prot);
+    pg.fillStyle = '#000';
+    pg.fillRect(0, 0, B.bx0, BOARD_H); pg.fillRect(B.bx0 + B.bw, 0, BOARD_W - B.bx0 - B.bw, BOARD_H);
+    if (!opt.includeHand) { const y = Math.round((B.wristAlong + 0.01) / B.mpp); pg.fillRect(0, y, BOARD_W, BOARD_H - y); }
+    if (opt.edits) { // corrections manuelles : ajout de protection (rouge) / libération (vert) — l'encre existante reste toujours protégée
+      const ed = opt.edits, eg = ctx2d(ed).getImageData(0, 0, BOARD_W, BOARD_H).data, pd = pg.getImageData(0, 0, BOARD_W, BOARD_H), d = pd.data;
+      const inkD = ctx2d(core).getImageData(0, 0, BOARD_W, BOARD_H).data;
+      for (let i = 0; i < d.length; i += 4) { if (eg[i + 3] < 10) continue; if (eg[i] > eg[i + 1]) d[i + 3] = 255; else if (inkD[i + 3] < 128) d[i + 3] = 0; }
+      pg.putImageData(pd, 0, 0);
+    }
+    if (opt.free) { // retouche : seule la zone libre fournie est modifiable
+      const fd = ctx2d(opt.free).getImageData(0, 0, BOARD_W, BOARD_H).data, pd = pg.getImageData(0, 0, BOARD_W, BOARD_H), d = pd.data;
+      for (let i = 0; i < d.length; i += 4) if (fd[i + 3] < 128) d[i + 3] = 255;
+      pg.putImageData(pd, 0, 0);
+    }
+    binarize(prot, 20);
+    return { ink, foot, core, protect: prot, marginPx, opaque };
+  },
+  // image envoyée au modèle : papier blanc + tatouages réels déroulés ; masque OpenAI : transparent = modifiable
+  modelInputs(B, M) {
+    const img = newCanvas(BOARD_W, BOARD_H), g = ctx2d(img); g.fillStyle = '#fff'; g.fillRect(0, 0, BOARD_W, BOARD_H); g.drawImage(M.ink, 0, 0);
+    const mask = newCanvas(BOARD_W, BOARD_H), mg = ctx2d(mask); mg.drawImage(M.protect, 0, 0);
+    return { image: img, mask };
+  },
+};
+
+// ---- outils raster
+function drawTexturedTri(g, img, s, d) {
+  // transformation affine source → destination, triangle découpé (léger agrandissement contre les joints)
+  const [[x0, y0], [x1, y1], [x2, y2]] = s, [[u0, v0], [u1, v1], [u2, v2]] = d;
+  const den = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0); if (Math.abs(den) < 1e-9) return;
+  const a = ((u1 - u0) * (y2 - y0) - (u2 - u0) * (y1 - y0)) / den, c = ((u2 - u0) * (x1 - x0) - (u1 - u0) * (x2 - x0)) / den;
+  const b = ((v1 - v0) * (y2 - y0) - (v2 - v0) * (y1 - y0)) / den, dd = ((v2 - v0) * (x1 - x0) - (v1 - v0) * (x2 - x0)) / den;
+  const e = u0 - a * x0 - c * y0, f = v0 - b * x0 - dd * y0;
+  const cx = (u0 + u1 + u2) / 3, cy = (v0 + v1 + v2) / 3, ex = (p, q) => [p + (p - cx) * 0.04 + Math.sign(p - cx) * 0.4, q + (q - cy) * 0.04 + Math.sign(q - cy) * 0.4];
+  g.save(); g.beginPath(); const p0 = ex(u0, v0), p1 = ex(u1, v1), p2 = ex(u2, v2); g.moveTo(p0[0], p0[1]); g.lineTo(p1[0], p1[1]); g.lineTo(p2[0], p2[1]); g.closePath(); g.clip();
+  g.setTransform(a, b, c, dd, e, f); g.drawImage(img, 0, 0); g.restore();
+}
+function binarize(c, thr) { const g = ctx2d(c), im = g.getImageData(0, 0, c.width, c.height), d = im.data; for (let i = 0; i < d.length; i += 4) { const on = d[i + 3] > thr; d[i] = d[i + 1] = d[i + 2] = 0; d[i + 3] = on ? 255 : 0; } g.putImageData(im, 0, 0); return c; }
+function dilate(src, r) {
+  const c = newCanvas(src.width, src.height), g = ctx2d(c); g.drawImage(src, 0, 0); if (r <= 0) return c;
+  for (const rr of [r, r * 0.66, r * 0.33]) for (let k = 0; k < 20; k++) { const a = k / 20 * Math.PI * 2; g.drawImage(src, Math.round(Math.cos(a) * rr), Math.round(Math.sin(a) * rr)); }
+  return c;
+}
+function imageOpaqueRatio(tex) {
+  const img = tex && tex.image; if (!img) return 0; if (img._opq != null) return img._opq;
+  const c = newCanvas(64, 64), g = ctx2d(c); g.drawImage(img, 0, 0, 64, 64); const d = g.getImageData(0, 0, 64, 64).data; let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 240) n++;
+  return (img._opq = n / (64 * 64));
+}
+const alphaOf = (c) => { const d = ctx2d(c).getImageData(0, 0, c.width, c.height).data; const a = new Uint8Array(c.width * c.height); for (let i = 0; i < a.length; i++) a[i] = d[i * 4 + 3]; return a; };
+
+// ---- extraction des ajouts dans le résultat du modèle
+// 1) papier → transparent ; 2) pixels sur l'encre/emprise existante = redessins → ignorés ;
+// 3) éléments (composantes connexes) : redessins résiduels ignorés, éléments tronqués ou empiétant décalés si possible, sinon rejetés.
+function extractAdditions(B, M, result, opt = {}) {
+  const c = newCanvas(BOARD_W, BOARD_H), g = ctx2d(c); g.drawImage(result, 0, 0, BOARD_W, BOARD_H);
+  const keyed = keyOutPaper(c);
+  const W = BOARD_W, H = BOARD_H, im = g.getImageData(0, 0, W, H), d = im.data;
+  const core = alphaOf(M.core), prot0 = alphaOf(M.protect), prot = alphaOf(dilate(M.protect, 3)); // +3 px de garde : le rééchantillonnage sur la peau ne déborde pas
+  // encre nouvelle candidate
+  const ink = new Uint8Array(W * H); for (let i = 0; i < W * H; i++) ink[i] = (d[i * 4 + 3] > 26 && !core[i]) ? 1 : 0;
+  // composantes sur une grille réduite (×2) avec rapprochement des traits proches (~4 mm)
+  const w2 = W >> 1, h2 = H >> 1, small = new Uint8Array(w2 * h2);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (ink[y * W + x]) small[(y >> 1) * w2 + (x >> 1)] = 1;
+  const grow = Math.max(1, Math.round(0.004 / B.mpp / 2)), dil = new Uint8Array(w2 * h2);
+  for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) if (small[y * w2 + x]) for (let dy = -grow; dy <= grow; dy++) for (let dx = -grow; dx <= grow; dx++) { const xx = x + dx, yy = y + dy; if (xx >= 0 && yy >= 0 && xx < w2 && yy < h2) dil[yy * w2 + xx] = 1; }
+  const lab = new Int32Array(w2 * h2).fill(-1); let nl = 0; const stack = new Int32Array(w2 * h2);
+  for (let p = 0; p < w2 * h2; p++) { if (!dil[p] || lab[p] >= 0) continue; let sp = 0; stack[sp++] = p; lab[p] = nl; while (sp) { const q = stack[--sp], x = q % w2, y = (q / w2) | 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= w2 || yy >= h2) continue; const r = yy * w2 + xx; if (dil[r] && lab[r] < 0) { lab[r] = nl; stack[sp++] = r; } } } nl++; }
+  const comps = Array.from({ length: nl }, (_, i) => ({ id: i, px: [], x0: W, y0: H, x1: 0, y1: 0, nearCore: 0, inMargin: 0 }));
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (!ink[i]) continue; const L = lab[(y >> 1) * w2 + (x >> 1)]; if (L < 0) continue; const cp = comps[L];
+    cp.px.push(i); if (x < cp.x0) cp.x0 = x; if (y < cp.y0) cp.y0 = y; if (x > cp.x1) cp.x1 = x; if (y > cp.y1) cp.y1 = y;
+    if (prot[i]) cp.inMargin++;
+    if ((x > 1 && core[i - 2]) || (x < W - 2 && core[i + 2]) || (y > 1 && core[i - 2 * W]) || (y < H - 2 && core[i + 2 * W])) cp.nearCore++;
+  }
+  const minPx = Math.max(120, Math.round((0.004 / B.mpp) ** 2)), kept = [], rejected = [];
+  const maxShift = Math.round((opt.maxShiftCm || 1.5) / 100 / B.mpp);
+  for (const cp of comps) {
+    const n = cp.px.length; if (n < minPx) continue;                       // poussière
+    if (cp.px.filter(i => prot0[i]).length / n > 0.7) continue;            // halo d'un tatouage redessiné : ignoré
+    const truncated = cp.nearCore > Math.max(24, Math.sqrt(n) * 0.9);       // coupé par une zone d'encre existante
+    if (truncated) { rejected.push({ reason: 'tronqué par un tatouage existant', n, box: [cp.x0, cp.y0, cp.x1, cp.y1] }); continue; }
+    let shift = [0, 0];
+    if (cp.inMargin) { // empiète sur la marge ou une zone interdite : on cherche le plus petit décalage sans chevauchement
+      shift = null;
+      outer: for (let r = 2; r <= maxShift; r += 2) for (let k = 0; k < 16; k++) {
+        const a = k / 16 * Math.PI * 2, dx = Math.round(Math.cos(a) * r), dy = Math.round(Math.sin(a) * r); let bad = false;
+        for (let j = 0; j < cp.px.length; j += 3) { const i = cp.px[j], x = i % W + dx, y = ((i / W) | 0) + dy; if (x < 0 || y < 0 || x >= W || y >= H || prot[y * W + x]) { bad = true; break; } }
+        if (!bad) { for (const i of cp.px) { const x = i % W + dx, y = ((i / W) | 0) + dy; if (prot[y * W + x]) { bad = true; break; } } if (!bad) { shift = [dx, dy]; break outer; } }
+      }
+      if (!shift) { rejected.push({ reason: 'empiète sur une zone protégée', n, box: [cp.x0, cp.y0, cp.x1, cp.y1] }); continue; }
+    }
+    // découpe de l'élément seul (ses pixels uniquement), décalé si besoin
+    const x0 = cp.x0 + shift[0], y0 = cp.y0 + shift[1], cw = cp.x1 - cp.x0 + 1, ch = cp.y1 - cp.y0 + 1;
+    const el = newCanvas(cw, ch), eg = ctx2d(el), ed = eg.createImageData(cw, ch);
+    for (const i of cp.px) { const x = i % W - cp.x0, y = ((i / W) | 0) - cp.y0, o = (y * cw + x) * 4; ed.data[o] = d[i * 4]; ed.data[o + 1] = d[i * 4 + 1]; ed.data[o + 2] = d[i * 4 + 2]; ed.data[o + 3] = d[i * 4 + 3]; }
+    eg.putImageData(ed, 0, 0);
+    kept.push({ canvas: el, x0, y0, w: cw, h: ch, n, shifted: shift[0] || shift[1] ? Math.hypot(...shift) * B.mpp * 100 : 0 });
+  }
+  kept.sort((a, b) => b.n - a.n);
+  return { kept, rejected, keyed };
+}
+
+// ---- pose d'un élément de planche comme calque indépendant (projection « déroulée bras », même repère)
+async function placeBoardElement(B, el, meta) {
+  const cx = el.x0 + el.w / 2, cy = el.y0 + el.h / 2;
+  const phi = ((cx - B.bx0) / B.bw - 0.5) * 2 * Math.PI, along = cy * B.mpp;
+  const hit = Board.surfaceAt(B, phi, along); if (!hit) return null;
+  const region = Body.regionName(hit.faceIndex);
+  const okRegion = B.limb.regions.includes(region) || (region === 'torso' && along < B.F.segs[0].L + 0.02);
+  if (!okRegion) return null;
+  // l'ancre réelle (point de peau) fixe le centre du motif : on recentre la découpe sur elle (aucune dérive)
+  const ac = Board.coords(B, hit.point.x, hit.point.y, hit.point.z); let aphi = ac.phi; if (aphi - phi > Math.PI) aphi -= 2 * Math.PI; if (phi - aphi > Math.PI) aphi += 2 * Math.PI;
+  const [ax, ay] = Board.toPx(B, aphi, ac.along);
+  const hw = Math.ceil(Math.max(ax - el.x0, el.x0 + el.w - ax)) + 2, hh = Math.ceil(Math.max(ay - el.y0, el.y0 + el.h - ay)) + 2;
+  const cv = newCanvas(hw * 2, hh * 2); ctx2d(cv).drawImage(el.canvas, Math.round(el.x0 - (ax - hw)), Math.round(el.y0 - (ay - hh)));
+  const R0 = Decals.sweepFrame(B.limb.chain, hit.point).R0;
+  const blob = await canvasToBlob(cv);
+  const imageId = await Images.save(blob, { w: cv.width, h: cv.height });
+  const anchor = Body.anchorFromHit(hit.faceIndex, hit.point), s = Body.surface(anchor);
+  const t = normalizeTattoo({
+    id: uid('tat_'), name: meta.name, status: 'project', libId: null, imageId, region: B.limb.regions.includes(region) ? region : 'upperarm_' + B.side, zone: zoneLabel(region, s.n, s.p), anchor,
+    widthCm: +(cv.width * B.radPerPx * R0 * 100).toFixed(2), heightCm: +(cv.height * B.mpp * 100).toFixed(2), lockRatio: false, rotation: 0, mode: 'limb',
+    order: S.tattoos.reduce((m, x) => Math.max(m, x.order), 0) + 1, refScale: { r: (Body.regionInfo[region] || {}).r || null, k: Body.k },
+    origin: 'ia', batch: meta.batch, pending: true, note: meta.note || '',
+  });
+  S.tattoos.push(t); await Decals.build(t);
+  return t;
+}
+
+// ---- contrôles (empreinte réelle des calques posés, recalculée sur la planche)
+function overlapReport(B, additions, protect) {
+  const a = alphaOf(Board.render(B, additions, 'ink')), p = alphaOf(protect); let over = 0, total = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] > 50) { total++; if (p[i]) over++; }
+  return { over, total };
+}
+// all = tous les calques présents (sauf ceux d'exclude) ; sinon seulement les verrouillés / existants
+async function lockedSnapshot(all = false, exclude = []) {
+  const sel = (t) => !exclude.includes(t.id) && (all || t.locked || t.status === 'existing');
+  const locked = S.project.variants.flatMap(v => v.tattoos.filter(sel).map(t => ({ v: v.id, t: JSON.stringify(t) })));
+  const hashes = {};
+  for (const t of S.project.variants.flatMap(v => v.tattoos)) if (sel(t)) {
+    try { const blob = await Images.blob(t.imageId); const buf = await blob.arrayBuffer(); hashes[t.imageId] = crypto.subtle ? Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buf))).map(b => b.toString(16).padStart(2, '0')).join('') : String(buf.byteLength); } catch (e) { hashes[t.imageId] = 'absent'; }
+  }
+  return { locked, hashes };
+}
+function sameSnapshot(a, b) { return JSON.stringify(a.locked) === JSON.stringify(b.locked) && JSON.stringify(a.hashes) === JSON.stringify(b.hashes); }
+// remise en état des calques protégés si un écart est détecté (ne devrait jamais arriver : ceinture et bretelles)
+function restoreLocked(snap) {
+  for (const { v, t } of snap.locked) { const vv = S.project.variants.find(x => x.id === v); if (!vv) continue; const o = JSON.parse(t); const i = vv.tattoos.findIndex(x => x.id === o.id); if (i >= 0) vv.tattoos[i] = o; else vv.tattoos.push(o); }
+  App.rebuildAll(); Save.mark();
+}
 
 </script>
 </body>
