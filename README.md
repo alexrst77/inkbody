@@ -1,8 +1,14 @@
 # InkBody
 
+**En ligne :** https://inkbody-production.up.railway.app (Railway, redéploiement automatique à chaque push sur `main`) · https://alexrst77.github.io/inkbody/ (GitHub Pages)
+
 Préparation de projets de tatouage sur un avatar 3D, entièrement dans le navigateur : sans compte, sans abonnement, sans clé d'API. Les projets et les images restent sur l'appareil (IndexedDB).
 
-## Mise en ligne sur GitHub Pages
+## Hébergement
+- **Railway** : service Node relié au dépôt (`npm start` → `server.js`, serveur statique sans dépendance, région EU West). Chaque push sur `main` redéploie.
+- **GitHub Pages** : branche `main`, dossier racine.
+
+## Mise en ligne sur GitHub Pages (autre dépôt)
 1. Créez un dépôt (par ex. `inkbody`) et déposez-y **tout le contenu** de ce dossier (`index.html`, `assets/`, `.nojekyll`, etc.) à la racine.
 2. Dans le dépôt : **Settings → Pages → Build and deployment → Source : Deploy from a branch**, branche `main`, dossier `/ (root)`.
 3. Après une minute, le site est disponible sur `https://votre-utilisateur.github.io/inkbody/`.
