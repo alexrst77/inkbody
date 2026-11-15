@@ -14,12 +14,19 @@ const OUT = path.join(__dirname, '..', 'assets', 'models');
 const S = 0.1; // décimètres → mètres
 
 // ---------- base.obj
-const V = []; const groups = {}; let g = null;
+const V = [], VT = []; const groups = {}, groupsVT = {}; let g = null;
 for (const line of fs.readFileSync(path.join(MH, '3dobjs/base.obj'), 'utf8').split('\n')) {
   if (line.startsWith('v ')) { const p = line.split(/\s+/); V.push([+p[1], +p[2], +p[3]]); }
-  else if (line.startsWith('g ')) { g = line.slice(2).trim(); groups[g] = groups[g] || []; }
-  else if (line.startsWith('f ')) groups[g].push(line.trim().split(/\s+/).slice(1).map(t => parseInt(t, 10) - 1));
+  else if (line.startsWith('vt ')) { const p = line.split(/\s+/); VT.push([+p[1], +p[2]]); }
+  else if (line.startsWith('g ')) { g = line.slice(2).trim(); groups[g] = groups[g] || []; groupsVT[g] = groupsVT[g] || []; }
+  else if (line.startsWith('f ')) { const t = line.trim().split(/\s+/).slice(1); groups[g].push(t.map(x => parseInt(x, 10) - 1)); groupsVT[g].push(t.map(x => parseInt(x.split('/')[1], 10) - 1)); }
 }
+// ---------- proxys MakeHuman (CC0, assets système : cheveux, sourcils, cils) — format JSON three.js exporté par makehuman-data
+const PX = process.env.PX || '/tmp/npmx/ex/package/public/data/proxies';
+const HAIRS = [['short02', 'Courts'], ['short04', 'Courts dégagés'], ['short01', 'Courts coiffés'], ['short03', 'Mi-courts à raie'], ['bob02', 'Carré'], ['bob01', 'Carré frange'], ['long01', 'Longs'], ['ponytail01', 'Queue de cheval'], ['afro01', 'Afro'], ['Braid01', 'Tresse']];
+const PROXIES = [...HAIRS.map(([n]) => ['hair', n]), ['eyebrows', 'eyebrow001'], ['eyelashes', 'eyelashes02']]
+  .map(([dir, n]) => ({ dir, name: n, d: JSON.parse(fs.readFileSync(path.join(PX, dir, n, n + '.json'), 'utf8')) }));
+const proxyRefs = [...new Set(PROXIES.flatMap(p => p.d.ref_vIdxs.flat()))];
 const quadsOf = (name) => groups[name].map(f => f.length === 4 ? f : [f[0], f[1], f[2], f[2]]);
 const vertsOf = (names) => [...new Set(names.flatMap(n => groups[n].flat()))].sort((a, b) => a - b);
 const groundY = centroid(vertsOf(['joint-ground']))[1];
@@ -32,7 +39,8 @@ const eyeL = vertsOf(['helper-l-eye']), eyeR = vertsOf(['helper-r-eye']), hairId
 const jointIdx = JOINTS.map(j => vertsOf(['joint-' + j]));
 const teeth = vertsOf(['helper-upper-teeth', 'helper-lower-teeth']);
 // sommets conservés (espace « keep ») : corps, yeux, calotte cheveux, articulations, dents (repères bouche)
-const keep = [...new Set([...bodyIdx, ...eyeL, ...eyeR, ...hairIdx, ...jointIdx.flat(), ...teeth])];
+const genIdx = vertsOf(['helper-genital']);
+const keep = [...new Set([...bodyIdx, ...eyeL, ...eyeR, ...hairIdx, ...jointIdx.flat(), ...teeth, ...genIdx, ...proxyRefs])];
 const map = new Map(keep.map((v, i) => [v, i]));
 const K = keep.length;
 console.log('Sommets conservés', K, '(corps', bodyIdx.length + ')');
@@ -160,6 +168,33 @@ push('hairQuads', toU16(quadsOf('helper-hair')));
 push('eyeAngle', Float32Array.from([...eyeAngle(eyeL, cen(eyeL)), ...eyeAngle(eyeR, cen(eyeR))]));
 push('eyeVerts', Uint16Array.from([...K_(eyeL), ...K_(eyeR)]));
 push('groupW', gw8); push('tint', tint); push('masks', masks);
+// UV du corps par coin de quad (skin MakeHuman)
+const bodyVT = groupsVT['body'].map(f => f.length === 4 ? f : [f[0], f[1], f[2], f[2]]).flat();
+push('bodyUV', Uint16Array.from(bodyVT.flatMap(t => [Math.round(VT[t][0] * 65535), Math.round(Math.min(1, Math.max(0, VT[t][1])) * 65535)])));
+push('genQuads', toU16(quadsOf('helper-genital')));
+// proxys : sommet = Σ w·v(ref) + décalage ; sommets dupliqués aux coutures UV
+const proxyMeta = [];
+for (const px of PROXIES) {
+  const d = px.d, nv = d.ref_vIdxs.length, uvs = d.uvs[0];
+  const refs = new Uint16Array(nv * 3), w = new Float32Array(nv * 3), off = new Float32Array(nv * 3);
+  for (let i = 0; i < nv; i++) for (let k = 0; k < 3; k++) { refs[i * 3 + k] = map.get(d.ref_vIdxs[i][k]); w[i * 3 + k] = d.weights[i][k]; off[i * 3 + k] = d.offsets[i][k] * S; }
+  const F = d.faces; const uniq = new Map(), outV = [], outUV = [], tri = [];
+  const vid = (v, t) => { const key = v * 100000 + t; let id = uniq.get(key); if (id === undefined) { id = outV.length; uniq.set(key, id); outV.push(v); outUV.push(uvs[t * 2], uvs[t * 2 + 1]); } return id; };
+  for (let i = 0; i < F.length;) {
+    const type = F[i++]; const quad = type & 1, n = quad ? 4 : 3; const vs = F.slice(i, i + n); i += n;
+    if (type & 2) i++; if (type & 4) i++;
+    let ts = null; if (type & 8) { ts = F.slice(i, i + n); i += n; }
+    if (type & 16) i++; if (type & 32) i += n; if (type & 64) i++; if (type & 128) i += n;
+    const ids = vs.map((v, k) => vid(v, ts ? ts[k] : 0));
+    tri.push(ids[0], ids[1], ids[2]); if (quad) tri.push(ids[0], ids[2], ids[3]);
+  }
+  const key = px.dir + ':' + px.name;
+  push('px:' + key + ':refs', refs); push('px:' + key + ':w', w); push('px:' + key + ':off', off);
+  push('px:' + key + ':v', Uint16Array.from(outV)); push('px:' + key + ':uv', Float32Array.from(outUV)); push('px:' + key + ':tri', Uint16Array.from(tri));
+  const tex = d.materials[0].mapDiffuse ? path.basename(d.materials[0].mapDiffuse) : null;
+  proxyMeta.push({ key, dir: px.dir, name: px.name, label: (HAIRS.find(h => h[0] === px.name) || [])[1] || px.name, tex: tex && (px.name + '.webp'), author: d.metadata.author });
+  if (tex) fs.copyFileSync(path.join(PX, px.dir, px.name, d.materials[0].mapDiffuse), path.join(OUT, 'px', px.name + '.src.png'));
+}
 for (const q of quant) push('m:' + q.name, q.q);
 const layout = {}; let off = 0;
 for (const p of parts) { off = Math.ceil(off / 4) * 4; layout[p.name] = { offset: off, length: p.arr.length, type: p.arr.constructor.name }; off += p.arr.byteLength; }
@@ -173,6 +208,7 @@ const meta = {
   morphs: quant.map(q => ({ name: q.name, scale: q.scale })),
   joints: Object.fromEntries(JOINTS.map((j, i) => [j, K_(jointIdx[i])])),
   mouthVerts: K_(teeth),
+  proxies: proxyMeta,
 };
 fs.writeFileSync(path.join(OUT, 'human.json'), JSON.stringify(meta));
 console.log('human.bin', (buf.length / 1e6).toFixed(2), 'Mo — gzip', (zlib.gzipSync(buf, { level: 9 }).length / 1e6).toFixed(2), 'Mo');

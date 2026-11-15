@@ -512,7 +512,7 @@ function newProject(name = 'Mon projet') {
   const vid = uid('var_');
   return {
     format: PROJECT_FORMAT, version: PROJECT_VERSION, id: uid('prj_'), name, createdAt: Date.now(), updatedAt: Date.now(),
-    avatar: { preset: 'neutre', heightCm: 175, params: { ...DEFAULT_PARAMS }, skin: '#c99b7d', eyes: '#5b3a24', hair: { style: 'court', color: '#2a211b' }, beard: { style: 'none', color: '#2a211b' }, measures: { upperarm: null, forearm: null, chest: null, thigh: null, calf: null }, face: null, customModel: null },
+    avatar: { preset: 'neutre', heightCm: 175, params: { ...DEFAULT_PARAMS }, skin: '#c99b7d', eyes: '#5b3a24', hair: { style: 'short02', color: '#2a211b' }, modesty: false, beard: { style: 'none', color: '#2a211b' }, measures: { upperarm: null, forearm: null, chest: null, thigh: null, calf: null }, face: null, customModel: null },
     library: [], variants: [{ id: vid, name: 'Original', createdAt: Date.now(), tattoos: [] }], activeVariantId: vid,
     settings: { grid: false },
   };
@@ -838,6 +838,27 @@ const Body = {
     const region = new Uint8Array(nS); const RG = [['head'], ['neck'], ['torso'], ['upperarm_l', 'upperarm_r'], ['forearm_l', 'forearm_r'], ['hand_l', 'hand_r'], ['thigh_l', 'thigh_r'], ['calf_l', 'calf_r'], ['foot_l', 'foot_r']];
     for (let i = 0; i < nS; i++) { let best = 0, bw = -1; for (let k = 0; k < 9; k++) if (W8[i * 9 + k] > bw) { bw = W8[i * 9 + k]; best = k; } const names = RG[best]; region[i] = this.REGIONS.indexOf(names.length === 1 ? names[0] : (P[i * 3] >= 0 ? names[0] : names[1])); }
     H.region = region;
+    // peau MakeHuman (CC0) : carte de détail (aréoles, lèvres, paumes, plis…) échantillonnée par sommet subdivisé
+    try {
+      const uv16 = arr('bodyUV'), fv = new Float32Array(uv16.length); for (let i = 0; i < uv16.length; i++) fv[i] = uv16[i] / 65535;
+      const UV = H.ccBody.applyFV(fv, 2);
+      const sample = async (url) => {
+        const img = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = () => rej(new Error(url)); im.src = url; });
+        const c = newCanvas(img.width, img.height), g = ctx2d(c); g.drawImage(img, 0, 0); const d = g.getImageData(0, 0, c.width, c.height).data, W2 = c.width, H2 = c.height;
+        const out = new Float32Array(nS * 3);
+        for (let i = 0; i < nS; i++) {
+          const x = UV[i * 2] * (W2 - 1), y = (1 - UV[i * 2 + 1]) * (H2 - 1); const x0 = Math.floor(x), y0 = Math.floor(y), x1 = Math.min(W2 - 1, x0 + 1), y1 = Math.min(H2 - 1, y0 + 1), tx = x - x0, ty = y - y0;
+          for (let a = 0; a < 3; a++) { const v = (d[(y0 * W2 + x0) * 4 + a] * (1 - tx) + d[(y0 * W2 + x1) * 4 + a] * tx) * (1 - ty) + (d[(y1 * W2 + x0) * 4 + a] * (1 - tx) + d[(y1 * W2 + x1) * 4 + a] * tx) * ty; out[i * 3 + a] = Math.max(0.4, Math.min(1.3, 1 + (v / 127.5 - 1) * 1.5)); } // contraste renforcé (aréoles, lèvres, plis)
+        }
+        return out;
+      };
+      [H.skinM, H.skinF] = await Promise.all([sample('assets/models/skin_m.jpg'), sample('assets/models/skin_f.jpg')]);
+    } catch (e) { H.skinM = H.skinF = null; }
+    // organes génitaux masculins (assistant MakeHuman), sous-maillage subdivisé
+    const genQ = arr('genQuads'); H.genIdx = [...new Set(genQ)]; const g1 = buildCC(remapQuads(genQ, local(H.genIdx)), H.genIdx.length), g2 = buildCC(g1.quads, g1.n); H.ccGen = { n: g2.n, quads: g2.quads, apply: (src, dim) => g2.apply(g1.apply(src, dim), dim) };
+    // proxys (cheveux, sourcils, cils)
+    H.proxies = {};
+    for (const pm of meta.proxies || []) H.proxies[pm.name] = { ...pm, refs: arr('px:' + pm.key + ':refs'), w: arr('px:' + pm.key + ':w'), off: arr('px:' + pm.key + ':off'), v: arr('px:' + pm.key + ':v'), uv: arr('px:' + pm.key + ':uv'), tri: arr('px:' + pm.key + ':tri') };
     this.restoreHuman();
     // os de référence à 1,75 m (pour estimer les zones d'un modèle GLB importé)
     this.deform({ heightCm: 175, params: { ...DEFAULT_PARAMS } }, true);
@@ -846,7 +867,7 @@ const Body = {
   restoreHuman() {
     const H = this.H; const P = this.composeHuman({ ...DEFAULT_PARAMS }).body;
     this.setup(P, H.index.slice(), H.region, H.W8, false);
-    const col = new THREE.BufferAttribute(Float32Array.from(H.tint), 3); this.geom.setAttribute('color', col);
+    const col = new THREE.BufferAttribute(Float32Array.from(H.tint), 3); this.geom.setAttribute('color', col); this._skinG = null;
     this.material.vertexColors = true; this.material.needsUpdate = true;
     Eyes.build();
   },
@@ -956,9 +977,17 @@ const Body = {
     this.height = this.geom.boundingBox.max.y;
     if (this.isCustom) this.updateBonesCustom();
     this.computeRegionInfo();
-    if (!this.isCustom) Eyes.update(this._C, this._hipY);
+    if (!this.isCustom) { Eyes.update(this._C, this._hipY); this.updateSkin(p); Proxies.update(); }
     Hair.rebuild();
     Engine.requestRender();
+  },
+  // détail de peau (texture MakeHuman) mélangé homme/femme selon le réglage de genre
+  updateSkin(p) {
+    const H = this.H; if (!H.skinM || this.isCustom) return;
+    const g = Math.round(clamp((p.gender + 1) / 2, 0, 1) * 20) / 20; if (this._skinG === g) return; this._skinG = g;
+    const c = this.geom.attributes.color.array, M = H.skinM, F = H.skinF;
+    for (let i = 0; i < c.length; i++) c[i] = F[i] + (M[i] - F[i]) * g;
+    this.geom.attributes.color.needsUpdate = true;
   },
   updateBonesCustom() {
     const B = {}; for (const [n, b] of Object.entries(this.boneBase || {})) B[n] = { a: b.a.clone().multiplyScalar(this.k), b: b.b.clone().multiplyScalar(this.k) };
@@ -1057,7 +1086,16 @@ function buildCC(quads, n) {
     }
     return out;
   };
-  return { n: nOut, quads: oq, apply };
+  // données par coin de face (ex. UV avec coutures) → une valeur par sommet subdivisé, sans lissage
+  const applyFV = (fv, dim) => {
+    const out = new Float32Array(nOut * dim); const FO = n * dim, EO = (n + nf) * dim;
+    for (let f = 0; f < nf; f++) for (let d = 0; d < dim; d++) { let s = 0; for (let i = 0; i < 4; i++) s += fv[(f * 4 + i) * dim + d]; out[FO + f * dim + d] = s / 4; }
+    for (let f = 0; f < nf; f++) for (let i = 0; i < 4; i++) { const e = fe[f * 4 + i]; if (ef0[e] !== f) continue; const j = (i + 1) % 4; for (let d = 0; d < dim; d++) out[EO + e * dim + d] = (fv[(f * 4 + i) * dim + d] + fv[(f * 4 + j) * dim + d]) / 2; }
+    const seen = new Uint8Array(n);
+    for (let f = 0; f < nf; f++) for (let i = 0; i < 4; i++) { const v = quads[f * 4 + i]; if (seen[v]) continue; seen[v] = 1; for (let d = 0; d < dim; d++) out[v * dim + d] = fv[(f * 4 + i) * dim + d]; }
+    return out;
+  };
+  return { n: nOut, quads: oq, apply, applyFV };
 }
 function quadsToIndex(q) { const o = new Uint32Array(q.length / 4 * 6); for (let f = 0, k = 0; f < q.length / 4; f++) { o[k++] = q[f * 4]; o[k++] = q[f * 4 + 1]; o[k++] = q[f * 4 + 2]; o[k++] = q[f * 4]; o[k++] = q[f * 4 + 2]; o[k++] = q[f * 4 + 3]; } return o; }
 
@@ -1095,15 +1133,74 @@ const Eyes = {
 // ---------------------------------------------------------------- cheveux 3D (mèches) & barbe
 // Chaque coiffure = une sous-couche colorée (cuir chevelu couvert) + des milliers de mèches en rubans texturés,
 // poussées depuis le cuir chevelu, coiffées (sens, gravité, boucles) et tenues hors de la tête et des épaules.
-const HAIR_STYLES = {
-  rase: { label: 'Rasés', strands: 0, shell: 0.0009 },
-  court: { label: 'Courts', strands: 3200, len: 0.024, hug: 0.8, comb: 'back', gravity: 0.25, lift: 0.3, curl: 0.15, width: 0.006, shell: 0.0025 },
-  degrade: { label: 'Dégradé (fade)', strands: 3000, len: 0.034, hug: 0.75, comb: 'back', gravity: 0.15, lift: 0.4, curl: 0.1, width: 0.006, shell: 0.0018, fade: true },
-  plaque: { label: 'Coiffés en arrière', strands: 3200, len: 0.075, hug: 0.95, comb: 'back', gravity: 0.35, lift: 0.12, curl: 0.05, width: 0.007, shell: 0.003 },
-  boucles: { label: 'Bouclés', strands: 3200, len: 0.05, hug: 0.35, comb: 'radial', gravity: 0.1, lift: 0.8, curl: 1.2, width: 0.008, shell: 0.004 },
-  milong: { label: 'Mi-longs', strands: 3400, len: 0.15, hug: 0.9, comb: 'part', gravity: 1.2, lift: 0.3, curl: 0.12, width: 0.008, shell: 0.003 },
-  long: { label: 'Longs', strands: 3800, len: 0.34, hug: 0.9, comb: 'part', gravity: 1.6, lift: 0.25, curl: 0.15, width: 0.009, shell: 0.003 },
-  chignon: { label: 'Chignon', strands: 3000, len: 0.09, hug: 0.97, comb: 'bun', gravity: 0.0, lift: 0.08, curl: 0.05, width: 0.007, shell: 0.003, bun: true },
+// anciennes coupes procédurales → coupes MakeHuman
+const HAIR_LEGACY = { court: 'short02', degrade: 'short04', volume: 'short02', plaque: 'short01', boucles: 'afro01', milong: 'bob02', long: 'long01', chignon: 'ponytail01' };
+const hairStyleOf = (st) => HAIR_LEGACY[st] || st;
+// cheveux, sourcils, cils et organes génitaux : maillages MakeHuman (CC0) ajustés à la morphologie
+const Proxies = {
+  meshes: {}, tex: {},
+  texture(name, file) {
+    if (this.tex[name]) return this.tex[name];
+    const t = new THREE.TextureLoader().load('assets/models/px/' + file, () => Engine.requestRender()); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+    return (this.tex[name] = t);
+  },
+  clear(kind) { const m = this.meshes[kind]; if (m) { Engine.scene.remove(m); m.geometry.dispose(); m.material.dispose(); delete this.meshes[kind]; } },
+  clearAll() { for (const k of Object.keys(this.meshes)) this.clear(k); },
+  make(kind, name, color, opts = {}) {
+    const H = Body.H, px = H && H.proxies[name]; if (!px) return this.clear(kind);
+    const cur = this.meshes[kind];
+    if (cur && cur.userData.name === name) { cur.material.color.set(color).multiplyScalar(opts.gain || 1); this.place(cur); return; }
+    this.clear(kind);
+    const n = px.v.length, g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(px.uv, 2)); g.setIndex(new THREE.BufferAttribute(Uint32Array.from(px.tri), 1));
+    const mat = new THREE.MeshStandardMaterial({ map: this.texture(name, px.tex), color: new THREE.Color(color).multiplyScalar(opts.gain || 1), alphaTest: opts.alphaTest || 0.4, transparent: false, side: THREE.DoubleSide, roughness: opts.rough || 0.62, metalness: 0, alphaToCoverage: true, envMapIntensity: 0.45 });
+    const m = new THREE.Mesh(g, mat); m.userData.name = name; m.renderOrder = 2; Engine.scene.add(m); this.meshes[kind] = m; this.place(m);
+  },
+  place(m) {
+    const H = Body.H, px = H.proxies[m.userData.name], pos = H.pos, k = Body.k, sh = (Body._hipY || 0) * ((Body.legL || 1) - 1);
+    const o = m.geometry.attributes.position.array, { refs, w, off, v } = px;
+    for (let i = 0; i < v.length; i++) {
+      const s = v[i]; let x = off[s * 3], y = off[s * 3 + 1], z = off[s * 3 + 2];
+      for (let j = 0; j < 3; j++) { const r = refs[s * 3 + j] * 3, ww = w[s * 3 + j]; x += pos[r] * ww; y += pos[r + 1] * ww; z += pos[r + 2] * ww; }
+      o[i * 3] = x * k; o[i * 3 + 1] = (y + sh) * k; o[i * 3 + 2] = z * k;
+    }
+    m.geometry.attributes.position.needsUpdate = true; m.geometry.computeVertexNormals(); m.geometry.computeBoundingSphere();
+  },
+  // organes génitaux masculins (masqués en mode pudique ou pour un corps féminin)
+  genitals() {
+    const H = Body.H, av = S.project && S.project.avatar; const p = av ? { ...DEFAULT_PARAMS, ...av.params } : DEFAULT_PARAMS;
+    const show = av && !av.modesty && p.gender > 0.2 && !Body.isCustom && H && H.ccGen;
+    if (!show) return this.clear('gen');
+    let m = this.meshes.gen;
+    if (!m) {
+      const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(H.ccGen.n * 3), 3)); g.setIndex(new THREE.BufferAttribute(quadsToIndex(H.ccGen.quads), 1));
+      m = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.55, sheen: 0.3, sheenColor: new THREE.Color(0xffc9b0) })); m.renderOrder = 0; Engine.scene.add(m); this.meshes.gen = m;
+    }
+    m.material.color.set(Body.material.color).multiplyScalar(0.9).lerp(new THREE.Color(0x9a5a4a), 0.12);
+    const pos = H.pos, raw = new Float32Array(H.genIdx.length * 3); for (let i = 0; i < H.genIdx.length; i++) { const r = H.genIdx[i] * 3; raw[i * 3] = pos[r]; raw[i * 3 + 1] = pos[r + 1]; raw[i * 3 + 2] = pos[r + 2]; }
+    const P = H.ccGen.apply(raw, 3), o = m.geometry.attributes.position.array, k = Body.k, sh = (Body._hipY || 0) * ((Body.legL || 1) - 1);
+    for (let i = 0; i < P.length; i += 3) { o[i] = P[i] * k; o[i + 1] = (P[i + 1] + sh) * k; o[i + 2] = P[i + 2] * k; }
+    if (!m.userData.trimmed) {
+      // la base de l'assistant (plaque collée au pubis) dépasse de la peau : on retire les faces au ras du corps
+      m.userData.trimmed = true; const q = H.ccGen.quads, keepQ = [];
+      for (let f = 0; f < q.length / 4; f++) {
+        const c = new THREE.Vector3(); for (let j = 0; j < 4; j++) c.add(new THREE.Vector3().fromArray(o, q[f * 4 + j] * 3)); c.multiplyScalar(0.25);
+        const hit = Body.closest(c); if (hit && hit.point.distanceTo(c) < 0.006 * k) continue; keepQ.push(q[f * 4], q[f * 4 + 1], q[f * 4 + 2], q[f * 4 + 3]);
+      }
+      m.geometry.setIndex(new THREE.BufferAttribute(quadsToIndex(Uint32Array.from(keepQ)), 1));
+    }
+    m.geometry.attributes.position.needsUpdate = true; m.geometry.computeVertexNormals(); m.geometry.computeBoundingSphere();
+  },
+  update() {
+    if (!S.project || Body.isCustom || !Body.H) { this.clearAll(); return; }
+    const av = S.project.avatar, st = hairStyleOf(av.hair.style);
+    if (st && st !== 'none' && st !== 'rase') this.make('hair', st, av.hair.color, { gain: 2.2, rough: 0.78, alphaTest: 0.45 }); else this.clear('hair');
+    this.make('brows', 'eyebrow001', new THREE.Color(av.hair.color).multiplyScalar(0.8), { gain: 1, alphaTest: 0.3 });
+    this.make('lashes', 'eyelashes02', '#151110', { gain: 1, alphaTest: 0.3 });
+    this.genitals();
+    Engine.requestRender();
+  },
 };
 const Hair = {
   hair: null, strands: null, bun: null, beard: null, _t: null, tex: null,
@@ -1112,13 +1209,10 @@ const Hair = {
   build() {
     this.clear();
     if (!S.project || Body.isCustom || !Body.H || !Body.lm) { Engine.requestRender(); return; }
-    const av = S.project.avatar; let hs = av.hair.style; const bs = av.beard.style;
-    if (hs === 'volume') hs = 'degrade';
-    const st = HAIR_STYLES[hs];
-    if (st) {
-      this.hair = this.shell((i) => hs === 'long' || hs === 'milong' ? Math.max(Body.hairMask[i], Body.hairLong[i] * 0.8) : Body.hairMask[i], () => st.shell, av.hair.color, hs === 'rase' ? 0.65 : 1);
-      if (st.strands) this.strands = this.groom(st, av.hair.color, hs);
-    }
+    const av = S.project.avatar; const hs = hairStyleOf(av.hair.style); const bs = av.beard.style;
+    // sous-couche teintée du cuir chevelu (repousse) : évite de voir la peau entre les mèches ; seule pour « rasé »
+    if (hs !== 'none') this.hair = this.shell((i) => Body.hairMask[i], () => 0.0008, av.hair.color, hs === 'rase' ? 0.65 : 0.85);
+    Proxies.update();
     if (bs !== 'none') {
       const off = { trois: 0.0009, courte: 0.0032, pleine: 0.007 }[bs];
       this.beard = this.shell((i) => Body.beardMask[i], (m) => off * (bs === 'pleine' ? 0.6 + 0.6 * m : 1), av.beard.color, bs === 'trois' ? 0.55 : 1);
@@ -1857,7 +1951,7 @@ const App = {
   },
   applyAvatar(rebuild = true) {
     const av = S.project.avatar;
-    Body.material.color.set(av.skin);
+    Body.material.color.set(av.skin); if (typeof Proxies !== 'undefined') Proxies.update();
     Body.deform(av);
     Face.rebuild();
     if (rebuild) this.rebuildAll();
@@ -2362,9 +2456,10 @@ const UI = {
     if (!Body.isCustom) {
       const hb = h('div', { class: 'sec' }, h('h4', {}, 'Cheveux et barbe'));
       const hs = h('select', { class: 'inp', onchange: (e) => { History.record(); av.hair.style = e.target.value; Hair.rebuild(); Save.mark(); } },
-        [['none', 'Aucun (crâne rasé)'], ...Object.entries(HAIR_STYLES).map(([k2, v]) => [k2, v.label])].map(([v, l]) => h('option', { value: v, selected: av.hair.style === v || (av.hair.style === 'volume' && v === 'degrade') }, l)));
+        [['none', 'Aucun (crâne lisse)'], ['rase', 'Rasés'], ...((Body.H && Body.H.meta.proxies) || []).filter(x => x.dir === 'hair').map(x => [x.name, x.label])].map(([v, l]) => h('option', { value: v, selected: hairStyleOf(av.hair.style) === v }, l)));
       const bs = h('select', { class: 'inp', onchange: (e) => { History.record(); av.beard.style = e.target.value; Hair.rebuild(); Save.mark(); } },
         [['none', 'Aucune'], ['trois', 'Barbe de 3 jours'], ['courte', 'Courte'], ['pleine', 'Pleine']].map(([v, l]) => h('option', { value: v, selected: av.beard.style === v }, l)));
+      hb.append(h('label', { class: 'chk', style: { marginBottom: '8px' } }, h('input', { type: 'checkbox', checked: !!av.modesty, onchange: (e) => { History.record(); av.modesty = e.target.checked; Proxies.update(); Save.mark(); } }), 'Mode pudique (masquer les parties intimes)'));
       hb.append(h('div', { class: 'row' }, h('label', {}, 'Cheveux'), h('input', { type: 'color', value: av.hair.color, onchange: (e) => { History.record(); av.hair.color = e.target.value; Hair.rebuild(); Save.mark(); } })), hs,
         h('div', { class: 'row', style: { marginTop: '8px' } }, h('label', {}, 'Barbe'), h('input', { type: 'color', value: av.beard.color, onchange: (e) => { History.record(); av.beard.color = e.target.value; Hair.rebuild(); Save.mark(); } })), bs);
       b.append(hb);
@@ -3655,7 +3750,7 @@ const AI = {
     const white = new THREE.MeshBasicMaterial({ color: 0xffffff });
     swap(Body.mesh, white);
     for (const r of Decals.objects.values()) swap(r.mesh, new THREE.MeshBasicMaterial({ color: 0x000000, map: r.mesh.material.map, transparent: true, alphaTest: 0.15, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -4 }));
-    const hid = [Hair.hair, Hair.strands, Hair.bun, Hair.beard, Face.mesh].filter(Boolean); hid.forEach(o => o.visible = false);
+    const hid = [Hair.hair, Hair.strands, Hair.bun, Hair.beard, Face.mesh, ...Object.values(Proxies.meshes)].filter(Boolean); hid.forEach(o => o.visible = false);
     const tm = Engine.renderer.toneMapping; Engine.renderer.toneMapping = THREE.NoToneMapping;
     let mask;
     try { mask = Engine.renderOffscreen({ width: size, height: size, background: '#000000' }); }
@@ -3799,7 +3894,7 @@ async function boot() {
   if (!localStorage.getItem('inkbody.guide')) showGuide();
   setTimeout(gcImages, 5000);
   try { sessionStorage.removeItem('ibFix'); } catch (e) { /* */ }
-  window.InkBody = { S, App, Body, Engine, Decals, Hair, AI, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
+  window.InkBody = { S, App, Body, Engine, Decals, Hair, Proxies, AI, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
 }
 boot().catch((e) => { const l = document.getElementById('loader'); if (l) { const d = document.createElement('div'); d.className = 'muted'; d.style.cssText = 'max-width:460px;text-align:center;padding:0 16px'; d.textContent = 'Erreur au démarrage : ' + (e && e.message || e); l.appendChild(d); } });
 

@@ -1,11 +1,12 @@
 // InkBody — service worker : rend l'application utilisable hors ligne après un premier chargement complet.
 // Pensez à changer VERSION à chaque mise à jour du site pour renouveler le cache.
-const VERSION = 'inkbody-3.2.0';
+const VERSION = 'inkbody-3.3.0';
 const CORE = [
   './', './index.html', './manifest.webmanifest',
   './assets/lib/three.module.min.js', './assets/lib/three-mesh-bvh.module.js',
   './assets/lib/addons/OrbitControls.js', './assets/lib/addons/GLTFLoader.js', './assets/lib/addons/BufferGeometryUtils.js',
-  './assets/models/human.json', './assets/models/human.bin.gz',
+  './assets/models/human.json', './assets/models/human.bin.gz', './assets/models/skin_m.jpg', './assets/models/skin_f.jpg',
+  './assets/models/px/short02.webp', './assets/models/px/short04.webp', './assets/models/px/short01.webp', './assets/models/px/short03.webp', './assets/models/px/bob02.webp', './assets/models/px/bob01.webp', './assets/models/px/long01.webp', './assets/models/px/ponytail01.webp', './assets/models/px/afro01.webp', './assets/models/px/Braid01.webp', './assets/models/px/eyebrow001.webp', './assets/models/px/eyelashes02.webp',
   './assets/samples/mandala.svg', './assets/samples/hirondelle.svg', './assets/samples/rose-lignes.svg',
   './assets/icons/icon.svg', './assets/icons/icon-180.png', './assets/icons/icon-192.png', './assets/icons/icon-512.png',
 ];

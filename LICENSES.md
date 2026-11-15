@@ -14,3 +14,11 @@ Seul fichier modifié parmi les dépendances : dans `assets/lib/addons/GLTFLoade
 Aucune police, image ou modèle externe n'est chargé à l'exécution.
 
 Remerciements : l'équipe MakeHuman pour la mise à disposition de ses ressources sous CC0.
+
+
+## Cheveux, sourcils, cils, peau et organes génitaux (v3.3)
+- Coupes de cheveux (short01–04, bob01–02, long01, ponytail01, afro01, Braid01), sourcils (eyebrow001), cils (eyelashes02) :
+  *system assets* MakeHuman 1.1 de Manuel Bastioni / Jonas Hauquier, **CC0 1.0**, récupérés via le paquet npm `makehuman-data`.
+  Textures converties en niveaux de gris recolorables (`tools/convert-assets.py`).
+- Cartes de détail de peau (`skin_m.jpg`, `skin_f.jpg`) : textures « young lightskinned » MakeHuman, marquées domaine public (CC0).
+- Organes génitaux masculins : maillage d'assistance `helper-genital` du maillage de base MakeHuman (CC0).
