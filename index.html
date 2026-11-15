@@ -1528,9 +1528,9 @@ const Decals = {
     const key = imageId + '|' + (tint || '');
     if (this.textures.has(key)) return this.textures.get(key);
     const bmp = await Images.bitmap(imageId);
-    const iw = bmp.width, ih = bmp.height; const s = Math.min(1, (MAX_TEX_PX - 4) / Math.max(iw, ih));
-    const c = newCanvas(Math.round(iw * s) + 4, Math.round(ih * s) + 4); const g = ctx2d(c);
-    g.imageSmoothingQuality = 'high'; g.drawImage(bmp, 2, 2, c.width - 4, c.height - 4); // bord transparent : rien au-delà du motif
+    const iw = bmp.width, ih = bmp.height; const s = Math.min(1, (MAX_TEX_PX - 8) / Math.max(iw, ih));
+    const c = newCanvas(Math.round(iw * s) + 8, Math.round(ih * s) + 8); const g = ctx2d(c);
+    g.imageSmoothingQuality = 'high'; g.drawImage(bmp, 4, 4, c.width - 8, c.height - 8); // bord transparent : rien au-delà du motif
     if (tint) {
       const col = new THREE.Color(tint); const d = g.getImageData(0, 0, c.width, c.height); const a = d.data;
       for (let i = 0; i < a.length; i += 4) { const lum = (a[i] * 0.299 + a[i + 1] * 0.587 + a[i + 2] * 0.114) / 255; a[i + 3] = a[i + 3] * clamp(1.15 - lum, 0, 1); a[i] = col.r * 255; a[i + 1] = col.g * 255; a[i + 2] = col.b * 255; }
@@ -1572,6 +1572,9 @@ const Decals = {
     this.warnings.set(t.id, this.warningFor(t, opt, geo));
     if (!geo) return;
     const mat = new THREE.MeshStandardMaterial({ transparent: true, opacity: t.opacity, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 - (t.order % 50), roughness: 0.65, metalness: 0 });
+    // rien en dehors du motif : sans ça, les bords de l'image sont « étirés » (traînées / ombres fantômes), surtout aux petits niveaux de mipmap
+    mat.onBeforeCompile = (sh) => { sh.fragmentShader = sh.fragmentShader.replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n#ifdef USE_MAP\n if (vMapUv.x < 0.0 || vMapUv.x > 1.0 || vMapUv.y < 0.0 || vMapUv.y > 1.0) discard;\n#endif'); };
+    mat.customProgramCacheKey = () => 'inkDecalClip';
     const mesh = new THREE.Mesh(geo, mat); mesh.renderOrder = 10 + t.order; mesh.userData.tattooId = t.id; mesh.visible = false;
     Engine.scene.add(mesh);
     const rec = { mesh }; this.objects.set(t.id, rec);
@@ -2793,7 +2796,7 @@ const Editor = {
       for (let it = 0; it < 2; it++) { const t = cell.slice(); for (let cy = 0; cy < gh; cy++) for (let cx = 0; cx < gw; cx++) for (let a = 0; a < 3; a++) { let s2 = 0, n = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const x = cx + dx, y = cy + dy; if (x < 0 || y < 0 || x >= gw || y >= gh) continue; s2 += t[(y * gw + x) * 3 + a]; n++; } cell[(cy * gw + cx) * 3 + a] = s2 / n; } }
     } else for (let c = 0; c < gw * gh; c++) { cell[c * 3] = skin[0]; cell[c * 3 + 1] = skin[1]; cell[c * 3 + 2] = skin[2]; }
     const thr = o.skinTol / 255, soft = Math.max(0.02, o.skinSoft / 255), gain = o.inkGain;
-    const A = new Float32Array(W * H);
+    const A = new Float32Array(W * H); let inkN = 0, colN = 0;
     for (let y = 0; y < H; y++) {
       const fy = clamp((y + 0.5) / cs - 0.5, 0, gh - 1), y0 = Math.floor(fy), y1 = Math.min(gh - 1, y0 + 1), ty = fy - y0;
       for (let x = 0; x < W; x++) {
@@ -2811,10 +2814,20 @@ const Editor = {
         A[p] = al * (sd[i + 3] / 255);
         if (al > 0.01) {
           for (let a = 0; a < 3; a++) d[i + a] = clamp((Math.min(1, T[a]) - (1 - al)) / al, 0, 1) * 255;
-          if (o.inkMono) { const l = lumOf(d[i], d[i + 1], d[i + 2]); d[i] = d[i + 1] = d[i + 2] = l; }
+          // encre sombre = noire : la division par une peau chaude (beaucoup de rouge, peu de bleu) teinte faussement le noir en bleu
+          const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn2 = Math.min(d[i], d[i + 1], d[i + 2]), l = lumOf(d[i], d[i + 1], d[i + 2]);
+          const sr = sd[i], sg = sd[i + 1], sb = sd[i + 2], sMx = Math.max(sr, sg, sb), sCh = sMx - Math.min(sr, sg, sb);
+          // couleur gardée seulement si le pixel de la photo est lui-même coloré ; un bleu « créé » par la correction (photo pas bleue) est un artefact
+          let keep = o.inkMono ? 0 : smoothstep(20, 50, sCh) * smoothstep(50, 100, sMx);
+          if (d[i + 2] > d[i] && sb <= sr + 6) keep = 0;
+          const lN = l * (0.5 + 0.5 * smoothstep(120, 200, l)); // noir franc (sinon gris délavé)
+          for (let a = 0; a < 3; a++) d[i + a] = lN + (d[i + a] - lN) * keep;
+          if (al > 0.4) { inkN++; if (keep > 0.5) colN++; }
         }
       }
     }
+    // motif quasi entièrement noir : on neutralise tout (aucune dérive de teinte résiduelle)
+    if (!o.inkMono && inkN && colN / inkN < 0.06) for (let p = 0; p < W * H; p++) { const i = p * 4; if (A[p] > 0.01) { const l = lumOf(d[i], d[i + 1], d[i + 2]); d[i] = d[i + 1] = d[i + 2] = l; } }
     // lissage de l'alpha (bord des traits) et suppression des points isolés
     if (o.inkSmooth) { for (let it = 0; it < o.inkSmooth; it++) { const t = A.slice(); for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const p = y * W + x; A[p] = (t[p] * 4 + t[p - 1] + t[p + 1] + t[p - W] + t[p + W]) / 8; } } }
     if (o.inkClean) {
