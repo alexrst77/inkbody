@@ -9,7 +9,7 @@ const PORT = Number(process.env.PORT) || 8080;
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.gz': 'application/gzip', '.bin': 'application/octet-stream',
   '.md': 'text/markdown; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.ico': 'image/x-icon' };
-const BLOCK = /^\/(\.git|node_modules|serverless|tools|server\.js|ai\.js|package(-lock)?\.json|Dockerfile)(\/|$)/;
+const BLOCK = /^\/(\.git|node_modules|serverless|tools|tests|server\.js|ai\.js|package(-lock)?\.json|Dockerfile)(\/|$)/;
 http.createServer((req, res) => {
   let p;
   try { p = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { res.writeHead(400).end(); return; }
