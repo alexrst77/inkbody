@@ -64,7 +64,7 @@ La clé n'est **jamais** dans le site : elle se règle dans les variables Railwa
 |---|---|
 | `OPENAI_API_KEY` | clé OpenAI (côté serveur uniquement) |
 | `ACCESS_CODE` | code personnel demandé dans l'app (sans lui, personne ne peut consommer le crédit) |
-| `OPENAI_IMAGE_MODEL` | facultatif, `gpt-image-1` par défaut |
+| `OPENAI_IMAGE_MODEL` | facultatif : `gpt-image-2` par défaut, repli automatique sur gpt-image-2.5-flare, gpt-image-1.5, gpt-image-1 |
 | `IMAGE_QUALITY` | facultatif : `low`, `medium` (défaut), `high` |
 | `MAX_PER_IP_PER_DAY` / `MAX_PER_DAY` | quotas (30 / 120 par défaut) |
 

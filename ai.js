@@ -9,12 +9,15 @@ const MODES = new Set(['motif', 'manchette', 'liaison', 'composition']);
 const day = () => new Date().toISOString().slice(0, 10);
 const counters = new Map(); // compteurs en mémoire (remis à zéro chaque jour / au redémarrage)
 const hits = new Map();     // anti-rafale : horodatages récents par IP
+// modèles essayés dans l'ordre si le précédent n'existe pas / n'est pas accessible à ce compte (les noms évoluent)
+const FALLBACKS = ['gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-1.5', 'gpt-image-1'];
+let working = null;
 
 function cfg() {
   return {
     key: process.env.OPENAI_API_KEY || '',
     code: process.env.ACCESS_CODE || '',
-    model: process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1',
+    model: process.env.OPENAI_IMAGE_MODEL || working || 'gpt-image-2',
     quality: process.env.IMAGE_QUALITY || 'medium',
     perIp: Number(process.env.MAX_PER_IP_PER_DAY || 30),
     perDay: Number(process.env.MAX_PER_DAY || 120),
@@ -99,29 +102,41 @@ async function generate(req, res) {
 
   const instr = instructions(mode, style, prompt, side, refs.length > 0);
   const size = mode === 'manchette' ? '1024x1536' : '1024x1024';
-  let r;
-  try {
+  const wantsAlpha = mode === 'motif' || mode === 'manchette';
+  const call = async (model, alpha) => {
     if ((mode === 'motif' || mode === 'manchette') && !refs.length) {
-      r = await fetch('https://api.openai.com/v1/images/generations', {
-        method: 'POST', headers: { Authorization: `Bearer ${c.key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: c.model, prompt: instr, n, size, background: 'transparent', output_format: 'png', quality: c.quality }),
-        signal: AbortSignal.timeout(240000),
-      });
-    } else {
-      const fd = new FormData();
-      fd.append('model', c.model); fd.append('prompt', instr); fd.append('n', String(n)); fd.append('size', size); fd.append('quality', c.quality);
-      if (mode === 'motif' || mode === 'manchette') fd.append('background', 'transparent');
-      const imgs = zone ? [zone, ...refs] : refs;
-      imgs.forEach((im, i) => fd.append('image[]', new Blob([im.bytes], { type: im.type }), `image${i}.${im.ext}`));
-      if (mask) fd.append('mask', new Blob([mask.bytes], { type: 'image/png' }), 'mask.png');
-      r = await fetch('https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${c.key}` }, body: fd, signal: AbortSignal.timeout(240000) });
+      const body = { model, prompt: instr, n, size, quality: c.quality };
+      if (alpha) { body.background = 'transparent'; body.output_format = 'png'; }
+      return fetch('https://api.openai.com/v1/images/generations', { method: 'POST', headers: { Authorization: `Bearer ${c.key}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(240000) });
+    }
+    const fd = new FormData();
+    fd.append('model', model); fd.append('prompt', instr); fd.append('n', String(n)); fd.append('size', size); fd.append('quality', c.quality);
+    if (alpha) fd.append('background', 'transparent');
+    const imgs = zone ? [zone, ...refs] : refs;
+    imgs.forEach((im, i) => fd.append('image[]', new Blob([im.bytes], { type: im.type }), `image${i}.${im.ext}`));
+    if (mask) fd.append('mask', new Blob([mask.bytes], { type: 'image/png' }), 'mask.png');
+    return fetch('https://api.openai.com/v1/images/edits', { method: 'POST', headers: { Authorization: `Bearer ${c.key}` }, body: fd, signal: AbortSignal.timeout(240000) });
+  };
+  const models = [...new Set([c.model, ...FALLBACKS])];
+  let r, out = {}, lastErr = '';
+  try {
+    outer: for (const model of models) {
+      let alpha = wantsAlpha;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        r = await call(model, alpha); out = await r.json().catch(() => ({}));
+        if (r.ok) { working = model; break outer; }
+        const msg = (out.error && out.error.message) || `Erreur du fournisseur (${r.status})`; lastErr = msg;
+        // paramètre non pris en charge par ce modèle (fond transparent) : on réessaie sans ; l'app retire le fond blanc
+        if (alpha && /background|transparen|output_format/i.test(msg)) { alpha = false; continue; }
+        if (/does not exist|not found|model_not_found|unknown model|not have access|must be verified|invalid model/i.test(msg) || r.status === 404) continue outer;
+        return send(res, 502, { error: msg });
+      }
     }
   } catch (e) { return send(res, 502, { error: e.name === 'TimeoutError' ? 'Le fournisseur d’IA a mis trop de temps' : 'Fournisseur d’IA injoignable' }); }
-  const out = await r.json().catch(() => ({}));
-  if (!r.ok) return send(res, 502, { error: (out.error && out.error.message) || `Erreur du fournisseur (${r.status})` });
+  if (!r || !r.ok) return send(res, 502, { error: 'Aucun modèle d’image disponible pour ce compte OpenAI (' + lastErr + '). Vérifiez la clé, le crédit et la vérification de l’organisation sur platform.openai.com.' });
   const images = (out.data || []).map(d => d.b64_json).filter(Boolean).map(b => 'data:image/png;base64,' + b);
   if (!images.length) return send(res, 502, { error: 'Aucune image renvoyée' });
-  send(res, 200, { images });
+  send(res, 200, { images, model: working });
 }
 
 // renvoie true si la requête a été traitée
