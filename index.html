@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#141416">
 <meta name="description" content="InkBody — préparez vos projets de tatouage sur un avatar 3D, en local dans votre navigateur.">
+<script>if(!Object.hasOwn)Object.hasOwn=function(o,k){return Object.prototype.hasOwnProperty.call(o,k)};</script>
 <title>InkBody — préparation de projets de tatouage</title>
 <link rel="icon" href="assets/icons/icon.svg" type="image/svg+xml">
 <link rel="manifest" href="manifest.webmanifest">
@@ -183,7 +184,7 @@ table.lst tr.cur td{background:var(--accbg)}
   #printArea img{width:100%;page-break-after:always;display:block}
 }
 /* ---------- mobile ---------- */
-@media (max-width:820px){
+@media (max-width:1100px){
   :root{--top:50px;--bb:calc(64px + var(--safeb))}
   #app{grid-template-columns:1fr;grid-template-rows:calc(var(--top) + var(--safet)) 1fr;grid-template-areas:"top" "stage"}
   #topbar{padding:var(--safet) 8px 0;gap:4px}
@@ -212,12 +213,37 @@ table.lst tr.cur td{background:var(--accbg)}
   .modal:not(.full){height:auto;max-height:100%;border-radius:14px 14px 0 0;align-self:flex-end}
   #toasts{bottom:auto;top:calc(var(--top) + var(--safet) + 64px)}
 }
-@media (min-width:821px){ .mob{display:none!important} }
-@media (max-width:1100px) and (min-width:821px){ :root{--left:250px;--right:290px} #modebar button{min-width:62px} }
+@media (min-width:1101px){ .mob{display:none!important} }
+@media (max-width:1300px) and (min-width:1101px){ :root{--left:250px;--right:290px} #modebar button{min-width:62px} }
+/* ---------- tablette (iPad en portrait) : tiroirs latéraux flottants, gros boutons ---------- */
+@media (max-width:1100px) and (min-width:700px){
+  :root{--top:56px;--bb:calc(76px + var(--safeb))}
+  .brand span{display:inline}
+  .projname{max-width:260px}
+  .panel{top:calc(var(--top) + var(--safet) + 12px);bottom:calc(var(--bb) + 12px);width:min(400px,46vw);max-height:none!important;border:1px solid var(--line2);border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.5);transform:translateX(calc(100% + 24px))}
+  #right.panel{left:auto;right:12px}
+  #left.panel{left:12px;right:auto;transform:translateX(calc(-100% - 24px))}
+  #left.panel.open,#right.panel.open{transform:none}
+  .sheet-handle i{display:none}
+  #bottombar{height:var(--bb);padding:8px 10% var(--safeb)}
+  #bottombar button{font-size:12.5px;min-height:58px}
+  #bottombar button svg{width:26px;height:26px}
+  #viewbar{top:12px;left:12px;right:12px}
+  #viewbar .grp .btn{min-height:40px;padding:0 12px;font-size:14px}
+  #viewbar select{min-height:40px;font-size:14px}
+  #hint{top:70px;font-size:14px}
+  #measureOut{top:70px;bottom:auto;left:auto;right:12px;max-width:340px}
+  .btn{min-height:42px}.btn.sm{min-height:38px}
+  input[type=range]{height:34px}
+  .lib{grid-template-columns:repeat(auto-fill,minmax(96px,1fr))}
+  .modal:not(.full){border-radius:16px;align-self:center;width:min(640px,94vw);height:auto}
+  .modal.full{border-radius:0}
+  .ed{grid-template-columns:300px 1fr;grid-template-rows:none}
+  .ed-side{max-height:none;order:0;border-top:none;border-right:1px solid var(--line)}
+  #toasts{top:calc(var(--top) + var(--safet) + 70px)}
+}
 </style>
-<script type="importmap">
-{ "imports": { "three": "./assets/vendor/three.module.min.js" } }
-</script>
+
 </head>
 <body>
 <div id="app">
@@ -297,14 +323,14 @@ table.lst tr.cur td{background:var(--accbg)}
 // InkBody — application de préparation de projets de tatouage (100 % locale)
 // Dépendances embarquées : three.js r170, three-mesh-bvh 0.8.3 (MIT)
 // ============================================================================
-import * as THREE from 'three';
+import * as THREE from './assets/vendor/three.module.min.js';
 import { OrbitControls } from './assets/vendor/addons/OrbitControls.js';
 import { GLTFLoader } from './assets/vendor/addons/GLTFLoader.js';
 import { mergeVertices } from './assets/vendor/addons/BufferGeometryUtils.js';
 import { MeshBVH, acceleratedRaycast } from './assets/vendor/three-mesh-bvh.module.js';
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.0';
 const PROJECT_FORMAT = 'inkbody-project';
 const PROJECT_VERSION = 1;
 const EXPORT_FORMAT = 'inkbody-export';
@@ -313,7 +339,8 @@ const MAX_WORK_PX = 2048;          // taille de travail max des motifs (l'origin
 const MAX_TEX_PX = 2048;           // taille max des textures GPU
 const MAX_MODEL_MB = 40;           // limite d'import GLB
 const IS_TOUCH = matchMedia('(pointer:coarse)').matches;
-const isMobile = () => matchMedia('(max-width:820px)').matches;
+const isMobile = () => matchMedia('(max-width:1100px)').matches; // téléphone ou tablette en portrait : 3D plein écran + panneaux repliables
+const isTablet = () => matchMedia('(max-width:1100px) and (min-width:700px)').matches;
 
 // ---------------------------------------------------------------- utilitaires
 const $ = (s, r = document) => r.querySelector(s);
@@ -629,17 +656,23 @@ const Engine = {
     loop();
   },
   requestRender() { this.needs = true; },
-  inset: 0,
-  // sur mobile, la feuille ouverte réduit la zone visible : on recentre le rendu au-dessus d'elle
-  setInset(px) { this.inset = Math.max(0, Math.round(px)); this.resize(); },
+  insets: { l: 0, r: 0, b: 0 },
+  // panneaux ouverts (feuille en bas sur téléphone, tiroir latéral sur tablette) : on recentre le rendu dans la zone libre
+  setInsets(l = 0, r = 0, b = 0) { this.insets = { l: Math.max(0, l | 0), r: Math.max(0, r | 0), b: Math.max(0, b | 0) }; this.resize(); },
+  setInset(px) { this.setInsets(0, 0, px); },
+  get inset() { return this.insets.b || this.insets.l || this.insets.r; },
   resize() {
     const el = this.canvas.parentElement; const w = el.clientWidth, hh = el.clientHeight;
     if (!w || !hh) return;
     this.renderer.setSize(w, hh, false);
-    const ins = Math.min(this.inset, hh * 0.6);
-    if (ins > 0) { this.camera.aspect = w / (hh + ins); this.camera.setViewOffset(w, hh + ins, 0, ins, w, hh); this.camera.zoom = (hh - ins) / hh; }
-    else { this.camera.aspect = w / hh; this.camera.clearViewOffset(); this.camera.zoom = 1; }
-    this.camera.updateProjectionMatrix(); this.requestRender();
+    const b = Math.min(this.insets.b, hh * 0.6), l = Math.min(this.insets.l, w * 0.6), r = Math.min(this.insets.r, w * 0.6);
+    const sx = l + r, cam = this.camera;
+    if (b > 0 || sx > 0) {
+      const fw = w + sx, fh = hh + b;
+      cam.aspect = fw / fh; cam.setViewOffset(fw, fh, r, b, w, hh);
+      cam.zoom = Math.min((hh - b) / hh, (w - sx) / w);
+    } else { cam.aspect = w / hh; cam.clearViewOffset(); cam.zoom = 1; }
+    cam.updateProjectionMatrix(); this.requestRender();
   },
   buildGrid() {
     const grp = this.grid = new THREE.Group(); grp.visible = false;
@@ -728,13 +761,16 @@ const Body = {
     // version compressée (gzip, ~2 Mo) décompressée dans le navigateur ; repli sur la version brute (5,5 Mo)
     const get = async (url, gz) => {
       const res = await fetch(url); if (!res.ok) throw new Error('Modèle 3D introuvable (' + url + ')');
-      const total = Number(res.headers.get('content-length')) || 0; let got = 0;
+      const total = Number(res.headers.get('content-length')) || 0;
+      // navigateurs anciens (iOS 15) : pas de flux transformables → lecture directe
+      if (!gz && (!res.body || typeof TransformStream === 'undefined' || !res.body.pipeThrough)) { const b = await res.arrayBuffer(); onProgress && onProgress(1); return b; }
+      let got = 0;
       let stream = res.body.pipeThrough(new TransformStream({ transform(chunk, ctl) { got += chunk.length; if (total && onProgress) onProgress(Math.min(1, got / total)); ctl.enqueue(chunk); } }));
       if (gz) stream = stream.pipeThrough(new DecompressionStream('gzip'));
       return new Response(stream).arrayBuffer();
     };
     let buf = null;
-    if ('DecompressionStream' in window) { try { buf = await get('assets/models/mannequin.bin.gz', true); } catch (e) { buf = null; } }
+    if (typeof DecompressionStream !== 'undefined' && typeof TransformStream !== 'undefined') { try { buf = await get('assets/models/mannequin.bin.gz', true); } catch (e) { buf = null; } }
     if (!buf || buf.byteLength < 1000) buf = await get('assets/models/mannequin.bin', false);
     this.meta = meta;
     const nV = meta.vertexCount;
@@ -1728,10 +1764,15 @@ const UI = {
   closeSheets() { $('#left').classList.remove('open'); $('#right').classList.remove('open'); $$('#bottombar [data-bb]').forEach(b => b.classList.remove('on')); this.syncInset(); },
   syncInset() {
     const el = $('#left.open') || $('#right.open');
-    $('#hint').style.visibility = isMobile() && el ? 'hidden' : '';
-    if (!isMobile() || !el) return Engine.setInset(0);
-    // hauteur réellement masquée au-dessus de la barre inférieure
-    requestAnimationFrame(() => Engine.setInset(el.getBoundingClientRect().height));
+    $('#hint').style.visibility = isMobile() && el && !isTablet() ? 'hidden' : '';
+    if (!isMobile() || !el) return Engine.setInsets(0, 0, 0);
+    requestAnimationFrame(() => {
+      const r = el.getBoundingClientRect(), st = $('#stage').getBoundingClientRect();
+      if (isTablet()) { // tiroir latéral
+        const wpx = el.offsetWidth + 12; // largeur finale (indépendante de l'animation d'ouverture)
+        if (el.id === 'left') Engine.setInsets(wpx, 0, 0); else Engine.setInsets(0, wpx, 0);
+      } else Engine.setInsets(0, 0, el.offsetHeight);
+    });
   },
   toggleSheet(which) { const el = $('#' + which); if (el.classList.contains('open')) this.closeSheets(); else this.openSheet(which); },
   setLTab(t) { S.ltab = t; $$('[data-ltab]').forEach(b => b.classList.toggle('on', b.dataset.ltab === t)); this.renderLeft(); },

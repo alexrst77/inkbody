@@ -29,7 +29,8 @@ Pour tester en local, il faut un petit serveur HTTP (les modules JavaScript ne s
 Aucun téléchargement initial n'est à faire : tout ce qu'il faut est dans le dossier.
 
 ## Compatibilité
-Chrome, Edge, Firefox récents ; Safari 16.4+ (iPhone/iPad iOS 16.4+). WebGL obligatoire.
+Chrome, Edge, Firefox récents ; Safari 15+ (iPhone/iPad sous iOS/iPadOS 15 ou plus récent, testé en simulation iPadOS 15.7). Pas d'« import map » ni d'API récente obligatoire : sur iOS 15, le mannequin est chargé en version brute (5,5 Mo) faute de décompression native. WebGL obligatoire.
+Sur iPad en portrait : 3D plein écran et panneaux en tiroirs latéraux ; en paysage : disposition ordinateur.
 **Hors ligne** : après un premier chargement en https (GitHub Pages), l'application et le mannequin sont mis en cache (service worker `sw.js`) et fonctionnent sans réseau. Installable sur l'écran d'accueil (Partager → « Sur l'écran d'accueil » sur iPhone).
 **Mise à jour du site** : changez `VERSION` dans `sw.js` à chaque publication pour renouveler le cache.
 
