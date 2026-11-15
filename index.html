@@ -1459,7 +1459,14 @@ const Decals = {
     }
     if (t.mode === 'surface' || (t.mode === 'wrap' && Body.isCustom)) opt.mode = 'surface';
     // bras et jambes : déroulé le long de l'axe du membre (tour complet, passage du coude/genou)
-    const limb = !Body.isCustom && (t.mode === 'surface' || t.mode === 'wrap') ? this.limbChain(t.region) : null;
+    let limb = !Body.isCustom && (t.mode === 'surface' || t.mode === 'wrap') ? this.limbChain(t.region) : null;
+    if (limb && t.mode === 'surface') {
+      // « épouse la peau » sur un membre : déroulé seulement si le motif fait une bonne partie du tour
+      // et ne remonte pas sur l'épaule / la hanche (sinon la carte géodésique, qui passe sur le torse, est meilleure)
+      const c = limb.chain; const top = c[0], seg = new THREE.Vector3().subVectors(c[1], c[0]); const along = new THREE.Vector3().subVectors(s.p, top).dot(seg.normalize());
+      const R = (Body.regionInfo[t.region] || {}).r || 0.04;
+      if (w < 2 * Math.PI * R * 0.42 || along - Math.max(w, h) * 0.55 < 0.03) limb = null;
+    }
     if (limb) { opt.mode = 'sweep'; opt.chain = limb.chain; opt.regions = limb.regions; }
     const geo = opt.mode === 'sweep' ? this.buildSweepPatch(opt) : opt.mode === 'surface' ? this.buildSurfacePatch(opt) : this.buildPatch(opt);
     this.warnings.set(t.id, this.warningFor(t, opt, geo));
