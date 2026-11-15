@@ -1564,8 +1564,12 @@ const Decals = {
       // « épouse la peau » sur un membre : déroulé seulement si le motif fait une bonne partie du tour
       // et ne remonte pas sur l'épaule / la hanche (sinon la carte géodésique, qui passe sur le torse, est meilleure)
       const c = limb.chain; const top = c[0], seg = new THREE.Vector3().subVectors(c[1], c[0]); const along = new THREE.Vector3().subVectors(s.p, top).dot(seg.normalize());
-      const R = (Body.regionInfo[t.region] || {}).r || 0.04;
-      if (w < 2 * Math.PI * R * 0.42 || along - Math.max(w, h) * 0.55 < 0.03) limb = null;
+      const R = (Body.regionInfo[t.region] || {}).r || 0.04; const ra = THREE.MathUtils.degToRad(t.rotation || 0);
+      const extAlong = (Math.abs(h * Math.cos(ra)) + Math.abs(w * Math.sin(ra))) / 2;      // demi-étendue le long du membre
+      const extAround = (Math.abs(w * Math.cos(ra)) + Math.abs(h * Math.sin(ra)));         // étendue autour du membre
+      const big = extAround > 2 * Math.PI * R * 0.42 || extAlong > 0.09;                   // manchette / bande / pièce longue
+      // seules les pièces qui débordent nettement au-dessus de l'épaule / de la hanche restent épousées sur le torse
+      if (!big || along - extAlong < -0.05) limb = null;
     }
     if (limb) { opt.mode = 'sweep'; opt.chain = limb.chain; opt.regions = limb.regions; }
     const geo = opt.mode === 'sweep' ? this.buildSweepPatch(opt) : opt.mode === 'surface' ? this.buildSurfacePatch(opt) : this.buildPatch(opt);
@@ -1592,7 +1596,7 @@ const Decals = {
     if (opt.mode === 'surface') return geo.userData.cut > 30 ? 'Le motif rencontre un pli du corps (aisselle, cou, entrejambe) : la partie incohérente n\u2019est pas projetée. Déplacez-le ou réduisez-le.' : '';
     const R = (Body.regionInfo[t.region] || {}).r;
     if (opt.mode === 'wrap' && R && opt.w > 2 * Math.PI * (opt.R0 || R) * 1.02) return 'Le motif fait plus que le tour du membre : il est coupé à la couture.';
-    if (opt.mode !== 'wrap' && R && WRAP_REGIONS.has(t.region) && t.region !== 'torso' && opt.w > R * 2.3) return 'Motif large pour une projection plane sur ce membre : les bords sont coupés. Utilisez le mode « Enroulé ».';
+    if (opt.mode === 'planar' && R && WRAP_REGIONS.has(t.region) && t.region !== 'torso' && (opt.w > R * 2.3 || opt.h > R * 4)) return 'PLANAR_LIMB';
     if (geo.userData.cut > 40 && opt.mode !== 'wrap') return 'Une partie du motif tombe sur une surface trop inclinée et n’est pas projetée.';
     return '';
   },
@@ -2216,7 +2220,12 @@ const UI = {
     b.append(h('div', { class: 'note' }, 'Zone : ', h('b', {}, t.zone), h('br'), 'Dimensions de projection : ', h('b', {}, fmt(eff.w * 100) + ' × ' + fmt(eff.h * 100) + ' cm'),
       Decals.limbChain && !Body.isCustom && Decals.limbChain(t.region) && t.mode !== 'planar' ? h('div', { class: 'muted' }, 'Bras/jambe : le motif est déroulé autour du membre (tour complet sans couture). Tour du membre ici : ' + fmt(2 * Math.PI * (Body.regionInfo[t.region] || { r: 0 }).r * 100) + ' cm env.') :
       h('div', { class: 'muted' }, { surface: 'Épouse la peau : largeur et hauteur mesurées en suivant la surface du corps.', wrap: 'Enroulé : la largeur est mesurée autour du membre (sur la surface).', planar: 'Projection plane : largeur et hauteur mesurées dans le plan du motif.' }[t.mode])));
-    if (warn) b.append(h('div', { class: 'note warn' }, warn));
+    if (warn === 'PLANAR_LIMB') b.append(h('div', { class: 'note warn' }, 'Projection plane : sur un bras ou une jambe, les bords et le dessous du membre ne sont pas couverts (comme un pochoir posé à plat). ',
+      h('button', { class: 'btn sm primary', style: { marginTop: '8px' }, disabled: dis, onclick: () => set({ mode: 'surface' }) }, 'Faire le tour du membre')));
+    else if (warn) b.append(h('div', { class: 'note warn' }, warn));
+    const limbC = Decals.limbChain && !Body.isCustom && t.mode !== 'planar' ? Decals.limbChain(t.region) : null;
+    if (limbC) { const R = (Body.regionInfo[t.region] || {}).r || 0; const circ = 2 * Math.PI * R * 100;
+      b.append(h('button', { class: 'btn sm', style: { margin: '0 0 10px' }, disabled: dis, title: 'Le motif fait exactement le tour du membre à cet endroit', onclick: () => set({ widthCm: +circ.toFixed(1) }) }, 'Largeur = tour du membre (' + fmt(circ) + ' cm)')); }
     if (lockedAll) b.append(h('div', { class: 'note' }, 'Motif verrouillé : ses réglages sont protégés.'));
     // dimensions
     const ratio = t.widthCm / t.heightCm;
