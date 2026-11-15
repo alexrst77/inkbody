@@ -8,7 +8,10 @@
 <script>
 // auto-réparation : si un ancien cache sert des fichiers incompatibles, on le vide et on recharge une fois
 addEventListener('error',function(e){var m=(e&&e.message)||'';if(/module specifier|Importing a module|import/i.test(m)&&!sessionStorage.getItem('ibFix')){sessionStorage.setItem('ibFix','1');var go=function(){location.reload()};try{Promise.all([window.caches?caches.keys().then(function(k){return Promise.all(k.map(function(x){return caches.delete(x)}))}):0,navigator.serviceWorker?navigator.serviceWorker.getRegistrations().then(function(r){return Promise.all(r.map(function(x){return x.unregister()}))}):0]).then(go,go)}catch(_){go()}}},true);
-setTimeout(function(){if(window.InkBody)return;var l=document.getElementById('loader');if(!l)return;var d=document.createElement('div');d.style.cssText='max-width:420px;text-align:center;padding:0 20px';d.innerHTML='Le chargement est anormalement long. <br><button class="btn primary" style="margin-top:10px">Vider le cache et recharger</button>';d.querySelector('button').onclick=function(){sessionStorage.removeItem('ibFix');var go=function(){location.reload()};Promise.all([window.caches?caches.keys().then(function(k){return Promise.all(k.map(function(x){return caches.delete(x)}))}):0,navigator.serviceWorker?navigator.serviceWorker.getRegistrations().then(function(r){return Promise.all(r.map(function(x){return x.unregister()}))}):0]).then(go,go)};l.appendChild(d)},30000);
+window.__ibErr=[];function ibShow(m){window.__ibErr.push(m);var l=document.getElementById('loader');if(!l||window.InkBody)return;var d=document.getElementById('ibErr');if(!d){d=document.createElement('div');d.id='ibErr';d.style.cssText='max-width:520px;font:12px/1.4 ui-monospace,Menlo,monospace;color:#f0a79a;text-align:left;padding:8px 16px;white-space:pre-wrap;word-break:break-word';l.appendChild(d)}d.textContent='Diagnostic : '+window.__ibErr.slice(-3).join('\n')}
+addEventListener('error',function(e){ibShow((e.message||'erreur')+(e.filename?' — '+e.filename.split('/').pop()+':'+e.lineno:''))});
+addEventListener('unhandledrejection',function(e){var r=e.reason;ibShow('Promesse rejetée : '+(r&&(r.message||r))+(r&&r.stack?' — '+String(r.stack).split('\n')[0]:''))});
+setTimeout(function(){if(window.InkBody)return;var l=document.getElementById('loader');if(!l)return;var d=document.createElement('div');d.style.cssText='max-width:420px;text-align:center;padding:0 20px';d.innerHTML='Le chargement est anormalement long. <br><button class="btn primary" style="margin-top:10px">Vider le cache et recharger</button>';d.querySelector('button').onclick=function(){sessionStorage.removeItem('ibFix');var go=function(){location.reload()};Promise.all([window.caches?caches.keys().then(function(k){return Promise.all(k.map(function(x){return caches.delete(x)}))}):0,navigator.serviceWorker?navigator.serviceWorker.getRegistrations().then(function(r){return Promise.all(r.map(function(x){return x.unregister()}))}):0]).then(go,go)};l.appendChild(d)},20000);
 if(!Object.hasOwn)Object.hasOwn=function(o,k){return Object.prototype.hasOwnProperty.call(o,k)};</script>
 <title>InkBody — préparation de projets de tatouage</title>
 <link rel="icon" href="assets/icons/icon.svg" type="image/svg+xml">
@@ -424,7 +427,13 @@ function trimCanvas(c, pad = 2) {
 const DB = {
   db: null,
   open() {
-    return new Promise((res, rej) => {
+    // Safari 14.1–15 : le premier indexedDB.open() peut rester sans réponse tant que le moteur n'est pas « réveillé »
+    const wake = () => new Promise((res) => {
+      if (!window.indexedDB || !indexedDB.databases || !/Safari/.test(navigator.userAgent) || /Chrome|Android/.test(navigator.userAgent)) return res();
+      let n = 0, done = false; const ok = () => { done = true; res(); };
+      const tick = () => { if (done) return; indexedDB.databases().then(ok, ok); if (++n < 50) setTimeout(tick, 100); else ok(); }; tick();
+    });
+    const attempt = () => new Promise((res, rej) => {
       if (!('indexedDB' in window)) return rej(new Error('IndexedDB indisponible'));
       const r = indexedDB.open('inkbody', 1);
       r.onupgradeneeded = () => {
@@ -436,6 +445,8 @@ const DB = {
       r.onerror = () => rej(r.error);
       r.onblocked = () => rej(new Error('Base locale bloquée par un autre onglet'));
     });
+    const timeout = (ms) => new Promise((_, rej) => setTimeout(() => rej(new Error('La base locale ne répond pas')), ms));
+    return wake().then(() => Promise.race([attempt(), timeout(6000)])).catch((e) => Promise.race([attempt(), timeout(6000)]));
   },
   tx(store, mode, fn) {
     return new Promise((res, rej) => {
@@ -768,12 +779,21 @@ const Body = {
     if (meta.format !== 'inkbody-human') throw new Error('Modèle de base invalide');
     // version compressée (~0,5 Mo) décompressée dans le navigateur ; repli sur la version brute (~2 Mo, iOS 15)
     const get = async (url, gz) => {
+      if (!gz) {
+        // fichier brut : XMLHttpRequest (progression fiable, aucun flux : compatible Safari 15)
+        return new Promise((res, rej) => {
+          const x = new XMLHttpRequest(); x.open('GET', url); x.responseType = 'arraybuffer';
+          x.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+          x.onload = () => x.status >= 200 && x.status < 300 ? res(x.response) : rej(new Error('Modèle 3D introuvable (' + url + ', ' + x.status + ')'));
+          x.onerror = () => rej(new Error('Réseau indisponible (' + url + ')')); x.timeout = 120000; x.ontimeout = () => rej(new Error('Délai dépassé (' + url + ')'));
+          x.send();
+        });
+      }
       const res = await fetch(url); if (!res.ok) throw new Error('Modèle 3D introuvable (' + url + ')');
       const total = Number(res.headers.get('content-length')) || 0;
-      if (!gz && (!res.body || typeof TransformStream === 'undefined' || !res.body.pipeThrough)) { const b = await res.arrayBuffer(); onProgress && onProgress(1); return b; }
       let got = 0;
       let stream = res.body.pipeThrough(new TransformStream({ transform(chunk, ctl) { got += chunk.length; if (total && onProgress) onProgress(Math.min(1, got / total)); ctl.enqueue(chunk); } }));
-      if (gz) stream = stream.pipeThrough(new DecompressionStream('gzip'));
+      stream = stream.pipeThrough(new DecompressionStream('gzip'));
       return new Response(stream).arrayBuffer();
     };
     let buf = null;
@@ -3482,17 +3502,22 @@ function memoryDB() {
 }
 async function boot() {
   const fail = (title, msg) => { $('#loader').innerHTML = ''; $('#loader').append(h('div', { style: { maxWidth: '440px', textAlign: 'center', padding: '20px' } }, h('h2', {}, title), h('p', { class: 'muted' }, msg))); };
+  const step = (t) => { const m = $('#loadMsg'); if (m) m.textContent = t; };
+  step('Initialisation 3D…');
   try { Engine.init($('#gl')); }
   catch (e) { fail('WebGL indisponible', 'InkBody a besoin de WebGL pour afficher le corps en 3D. Activez l’accélération matérielle, mettez à jour votre navigateur, ou essayez Chrome, Firefox ou Safari récent.'); return; }
   Measure.init(); Interact.init(); wireUI();
+  step('Téléchargement du corps 3D…');
   try {
     await Body.loadHuman((p) => { $('#loadBar').style.width = Math.round(p * 100) + '%'; });
   } catch (e) { fail('Corps 3D indisponible', 'Le modèle n’a pas pu être chargé (' + e.message + '). Vérifiez que le dossier assets/ est bien publié avec index.html.'); return; }
+  step('Ouverture des projets enregistrés…');
   try { await DB.open(); }
   catch (e) { memoryDB(); toast('Stockage local indisponible (navigation privée ?) : vos projets ne seront pas conservés après fermeture. Pensez à exporter.', 'err', 9000); }
   let p = null;
   try { const last = localStorage.getItem('inkbody.last'); if (last) p = await DB.get('projects', last); if (!p) p = (await DB.all('projects')).sort((a, b) => b.updatedAt - a.updatedAt)[0]; } catch (e) { /* */ }
   if (!p) { p = newProject(); try { await DB.put('projects', p); } catch (e) { /* */ } }
+  step('Préparation du projet…');
   try { await App.openProject(p, { silent: true }); }
   catch (e) { toast('Projet illisible (' + e.message + '). Un nouveau projet est créé.', 'err', 7000); await App.openProject(newProject(), { silent: true }); }
   $('#btnGrid').classList.toggle('on', !!S.project.settings.grid);
@@ -3508,7 +3533,7 @@ async function boot() {
   try { sessionStorage.removeItem('ibFix'); } catch (e) { /* */ }
   window.InkBody = { S, App, Body, Engine, Decals, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
 }
-boot();
+boot().catch((e) => { const l = document.getElementById('loader'); if (l) { const d = document.createElement('div'); d.className = 'muted'; d.style.cssText = 'max-width:460px;text-align:center;padding:0 16px'; d.textContent = 'Erreur au démarrage : ' + (e && e.message || e); l.appendChild(d); } });
 
 </script>
 </body>
