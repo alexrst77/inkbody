@@ -1575,7 +1575,9 @@ const Decals = {
       const extAround = (Math.abs(w * Math.cos(ra)) + Math.abs(h * Math.sin(ra)));         // étendue autour du membre
       const big = extAround > 2 * Math.PI * R * 0.42 || extAlong > 0.09;                   // manchette / bande / pièce longue
       // seules les pièces qui débordent nettement au-dessus de l'épaule / de la hanche restent épousées sur le torse
-      if (!big || along - extAlong < -0.2) limb = null; // pièce surtout posée sur l'épaule/le torse : carte géodésique
+      const sleeve = extAlong * 2 > extAround * 1.6 && extAlong > 0.09;                     // pièce allongée le long du membre (manchette)
+      // manchette : déroulé même si elle monte sur l'épaule ; autre grande pièce : seulement si elle ne déborde pas sur l'épaule/le torse
+      if (!big || (!sleeve && along - extAlong < 0.04)) limb = null;
     }
     if (limb) { opt.mode = 'sweep'; opt.chain = limb.chain; opt.regions = limb.regions; opt.cap = limb.cap; opt.capR = limb.capR; }
     const geo = opt.mode === 'sweep' ? this.buildSweepPatch(opt) : opt.mode === 'surface' ? this.buildSurfacePatch(opt) : this.buildPatch(opt);
