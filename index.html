@@ -249,6 +249,7 @@ table.lst tr.cur td{background:var(--accbg)}
   .ed-side{max-height:none;order:0;border-top:none;border-right:1px solid var(--line)}
   #toasts{top:calc(var(--top) + var(--safet) + 70px)}
 }
+@media (pointer:coarse){input.inp,textarea.inp,select.inp{font-size:16px}}
 </style>
 
 </head>
@@ -3704,15 +3705,18 @@ const AI = {
       if (st.mode === 'manchette') form.append(h('div', { class: 'sec' }, h('h4', {}, 'Bras'), UI.seg([['r', 'Bras droit'], ['l', 'Bras gauche']], st.side, (v) => { st.side = v; draw(); }),
         h('p', { class: 'muted' }, 'Le dessin est créé en planche verticale (haut = épaule, bas = poignet) puis enroulé automatiquement autour du bras.')));
       if (st.mode === 'composition') form.append(h('div', { class: 'note' }, 'La vue actuelle de l’avatar est envoyée avec un masque : seule la peau libre est modifiable, les tatouages placés sont protégés. Cadrez la zone avant de lancer.'));
-      const ta = h('textarea', { class: 'inp', rows: 3, placeholder: st.mode === 'manchette' ? 'Ex. : grande rose sur l’épaule, roi d’échecs sur le biceps, volutes baroques, fleurs sur l’avant-bras, rose sur le dos de la main' : 'Ex. : rose réaliste avec feuilles, ombrage doux', value: st.prompt, oninput: (e) => st.prompt = e.target.value.slice(0, 1000) });
+      const ta = h('textarea', { class: 'inp', rows: 3, autocapitalize: 'sentences', enterkeyhint: 'done', style: { fontSize: '16px' }, placeholder: st.mode === 'manchette' ? 'Ex. : grande rose sur l’épaule, roi d’échecs sur le biceps, volutes baroques, fleurs sur l’avant-bras, rose sur le dos de la main' : 'Ex. : rose réaliste avec feuilles, ombrage doux', value: st.prompt, oninput: (e) => st.prompt = e.target.value.slice(0, 1000) });
       const styles = ['réaliste noir et gris', 'fine line', 'dotwork', 'blackwork', 'ornemental', 'traditionnel', 'néo-traditionnel', 'japonais', 'géométrique', 'aquarelle'];
-      form.append(h('div', { class: 'sec' }, h('h4', {}, '2. Votre idée'), ta, h('select', { class: 'inp', style: { marginTop: '8px' }, onchange: (e) => st.style = e.target.value }, styles.map(x => h('option', { selected: x === st.style }, x)))));
+      // secours iPad : si le clavier ne s'ouvre pas (clavier physique, Apple Pencil/Griffonner, bug d'app écran d'accueil), saisie par la boîte système
+      const typeBtn = h('button', { class: 'btn sm', style: { marginTop: '6px' }, onclick: () => { const v = prompt('Décrivez votre tatouage :', st.prompt); if (v != null) { st.prompt = v.slice(0, 1000); ta.value = st.prompt; } } }, '⌨ Le clavier ne s’ouvre pas ? Saisir ici');
+      form.append(h('div', { class: 'sec' }, h('h4', {}, '2. Votre idée'), ta, typeBtn, h('select', { class: 'inp', style: { marginTop: '8px' }, onchange: (e) => st.style = e.target.value }, styles.map(x => h('option', { selected: x === st.style }, x)))));
       const refGrid = h('div', { class: 'lib', style: { marginBottom: '8px' } });
       for (const l of S.project.library.slice(0, 24)) { const img = h('img'); Images.url(l.imageId).then(u => img.src = u); refGrid.append(h('button', { class: 'lib-item' + (st.refs.has(l.id) ? ' on' : ''), title: l.name, onclick: () => { st.refs.has(l.id) ? st.refs.delete(l.id) : st.refs.size < 3 && st.refs.add(l.id); draw(); } }, img)); }
       form.append(h('div', { class: 'sec' }, h('h4', {}, '3. Motifs à reprendre (facultatif, 3 max)'), h('p', { class: 'muted' }, 'Ex. : votre rose ou votre roi d’échecs : l’IA reprend leur style et les intègre.'), S.project.library.length ? refGrid : h('p', { class: 'muted' }, 'Bibliothèque vide.')));
-      const codeIn = h('input', { class: 'inp', type: 'password', autocomplete: 'off', placeholder: 'Code d’accès (ACCESS_CODE)', value: this.accessCode, oninput: (e) => this.accessCode = e.target.value });
+      const codeIn = h('input', { class: 'inp', type: 'password', autocomplete: 'off', style: { fontSize: '16px' }, placeholder: 'Code d’accès (ACCESS_CODE)', value: this.accessCode, oninput: (e) => this.accessCode = e.target.value });
       const remember = h('input', { type: 'checkbox', checked: localStorage.getItem('inkbody.ai.noremember') !== '1' });
-      form.append(h('div', { class: 'field' }, h('span', {}, 'Code d’accès'), codeIn), h('label', { class: 'chk' }, remember, 'Se souvenir du code sur cet appareil'));
+      const codeBtn = h('button', { class: 'btn sm', onclick: () => { const v = prompt('Code d’accès :', ''); if (v != null) { this.accessCode = v.trim(); codeIn.value = this.accessCode; } } }, '⌨ Saisir');
+      form.append(h('div', { class: 'field' }, h('span', {}, 'Code d’accès'), h('div', { class: 'row' }, codeIn, codeBtn)), h('label', { class: 'chk' }, remember, 'Se souvenir du code sur cet appareil'));
       if (st.mode !== 'composition') form.append(h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: st.auto, onchange: (e) => st.auto = e.target.checked }), 'Poser automatiquement le résultat sur l’avatar'));
       form.append(h('button', { class: 'btn primary', style: { width: '100%', marginTop: '10px' }, onclick: () => {
         if (remember.checked && this.accessCode) { localStorage.setItem('inkbody.ai.code', this.accessCode); localStorage.removeItem('inkbody.ai.noremember'); } else { localStorage.removeItem('inkbody.ai.code'); localStorage.setItem('inkbody.ai.noremember', '1'); }
