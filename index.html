@@ -1357,6 +1357,65 @@ const Decals = {
     geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
     geo.userData.cut = cut; return geo;
   },
+  // chaîne d'axes d'un membre (épaule → coude → poignet → main, hanche → genou → cheville → orteils)
+  limbChain(region) {
+    const B = Body.bones; if (!B) return null; const side = region.slice(-1);
+    if (/^(upperarm|forearm)_/.test(region)) return { chain: [B['upperarm_' + side].a, B['upperarm_' + side].b, B['forearm_' + side].b, B['hand_' + side].b], regions: ['upperarm_' + side, 'forearm_' + side, 'hand_' + side] };
+    if (/^(thigh|calf)_/.test(region)) return { chain: [B['thigh_' + side].a, B['thigh_' + side].b, B['calf_' + side].b, B['foot_' + side].b], regions: ['thigh_' + side, 'calf_' + side, 'foot_' + side] };
+    return null;
+  },
+  /**
+   * Projection « déroulée » le long d'un membre : chaque point de peau reçoit (angle autour de l'axe, distance le long de l'axe).
+   * L'axe suit la chaîne articulaire (le motif passe le coude/genou sans cassure) et le repère est transporté d'un segment
+   * à l'autre. Les faces à cheval sur la couture sont dupliquées de part et d'autre : le tour est complet, sans trou.
+   */
+  buildSweepPatch(opt) {
+    const P = Body.geom.attributes.position.array, N = Body.geom.attributes.normal.array, I = Body.index;
+    const { p, w, h, rot, flipX, flipY, startFace, eps } = opt; const chain = opt.chain;
+    const segs = []; let cum = 0;
+    for (let i = 0; i < chain.length - 1; i++) { const a = chain[i], d = new THREE.Vector3().subVectors(chain[i + 1], a); const L = d.length(); if (L < 1e-5) continue; segs.push({ a, dir: d.multiplyScalar(1 / L), L, cum }); cum += L; }
+    if (!segs.length) return null;
+    const proj = (x, y, z) => { let best = null, bd = Infinity; for (let i = 0; i < segs.length; i++) { const sg = segs[i]; const qx = x - sg.a.x, qy = y - sg.a.y, qz = z - sg.a.z; const t = clamp(qx * sg.dir.x + qy * sg.dir.y + qz * sg.dir.z, 0, sg.L); const rx = qx - sg.dir.x * t, ry = qy - sg.dir.y * t, rz = qz - sg.dir.z * t; const d2 = rx * rx + ry * ry + rz * rz; if (d2 < bd) { bd = d2; best = { i, t, rx, ry, rz }; } } return best; };
+    // repère radial à l'ancre, transporté sur les autres segments
+    const pa = proj(p.x, p.y, p.z); const e1 = new Array(segs.length), e2 = new Array(segs.length);
+    const r0 = new THREE.Vector3(pa.rx, pa.ry, pa.rz); const R0 = Math.max(r0.length(), 0.008); r0.normalize();
+    e1[pa.i] = r0;
+    const carry = (from, to) => { const q = new THREE.Quaternion().setFromUnitVectors(segs[from].dir, segs[to].dir); const v = e1[from].clone().applyQuaternion(q); v.addScaledVector(segs[to].dir, -v.dot(segs[to].dir)).normalize(); e1[to] = v; };
+    for (let i = pa.i + 1; i < segs.length; i++) carry(i - 1, i);
+    for (let i = pa.i - 1; i >= 0; i--) carry(i + 1, i);
+    for (let i = 0; i < segs.length; i++) e2[i] = new THREE.Vector3().crossVectors(e1[i], segs[i].dir); // droite de l'observateur, haut = vers l'épaule
+    const T0 = segs[pa.i].cum + pa.t;
+    const rr = THREE.MathUtils.degToRad(rot || 0), cr = Math.cos(rr), sr = Math.sin(rr);
+    const raw = (v) => { const pr = proj(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]); const a = e1[pr.i], b = e2[pr.i]; return [Math.atan2(pr.rx * b.x + pr.ry * b.y + pr.rz * b.z, pr.rx * a.x + pr.ry * a.y + pr.rz * a.z), -(segs[pr.i].cum + pr.t - T0)]; };
+    const toUV = (phi, tt) => { const s0 = phi * R0; const s = s0 * cr + tt * sr, t2 = -s0 * sr + tt * cr; return [s / w + 0.5, t2 / h + 0.5]; };
+    const allowed = new Set(opt.regions.map(r => Body.regionNames.indexOf(r)));
+    const gen = ++Body.gen; const stamp = Body.stamp; const cache = new Map();
+    const R = (v) => { let r = cache.get(v); if (!r) { r = raw(v); cache.set(v, r); } return r; };
+    const pos = [], uv = [], nor = []; const queue = [startFace]; stamp[startFace] = gen; const margin = 0.02;
+    const inside = (q) => q[0] > -margin && q[0] < 1 + margin && q[1] > -margin && q[1] < 1 + margin;
+    let overlap = false;
+    while (queue.length) {
+      const f = queue.pop(); if (!allowed.has(Body.faceRegion[f]) && f !== startFace) continue;
+      const vs = [I[f * 3], I[f * 3 + 1], I[f * 3 + 2]]; const rs = vs.map(R);
+      // continuité angulaire dans la face (couture à ±π)
+      const ph = rs.map(r => r[0]); let seam = false;
+      for (let k = 1; k < 3; k++) { if (ph[k] - ph[0] > Math.PI) { ph[k] -= 2 * Math.PI; seam = true; } else if (ph[0] - ph[k] > Math.PI) { ph[k] += 2 * Math.PI; seam = true; } }
+      let accepted = false;
+      for (const shift of seam ? [0, 2 * Math.PI, -2 * Math.PI] : [0]) {
+        const q = [0, 1, 2].map(k => toUV(ph[k] + shift, rs[k][1]));
+        if (!q.some(inside)) continue;
+        accepted = true; if (shift) overlap = overlap || (2 * Math.PI * R0 < w * 0.98);
+        for (let k = 0; k < 3; k++) { const vi = vs[k]; pos.push(P[vi * 3] + N[vi * 3] * eps, P[vi * 3 + 1] + N[vi * 3 + 1] * eps, P[vi * 3 + 2] + N[vi * 3 + 2] * eps); nor.push(N[vi * 3], N[vi * 3 + 1], N[vi * 3 + 2]); uv.push(flipX ? 1 - q[k][0] : q[k][0], flipY ? 1 - q[k][1] : q[k][1]); }
+      }
+      if (!accepted && f !== startFace) continue;
+      for (const vi of vs) for (let j = Body.vfStart[vi]; j < Body.vfStart[vi + 1]; j++) { const g = Body.vfList[j]; if (stamp[g] !== gen) { stamp[g] = gen; queue.push(g); } }
+    }
+    opt.R0 = R0; opt.overlap = overlap;
+    if (!pos.length) return null;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    geo.userData.cut = 0; return geo;
+  },
   effSize(t) {
     let fw = 1, fh = 1;
     if (t.sizeMode === 'follow' && t.refScale) {
@@ -1399,7 +1458,10 @@ const Decals = {
       opt.regions = t.region === 'torso' ? ['torso'] : [t.region];
     }
     if (t.mode === 'surface' || (t.mode === 'wrap' && Body.isCustom)) opt.mode = 'surface';
-    const geo = opt.mode === 'surface' ? this.buildSurfacePatch(opt) : this.buildPatch(opt);
+    // bras et jambes : déroulé le long de l'axe du membre (tour complet, passage du coude/genou)
+    const limb = !Body.isCustom && (t.mode === 'surface' || t.mode === 'wrap') ? this.limbChain(t.region) : null;
+    if (limb) { opt.mode = 'sweep'; opt.chain = limb.chain; opt.regions = limb.regions; }
+    const geo = opt.mode === 'sweep' ? this.buildSweepPatch(opt) : opt.mode === 'surface' ? this.buildSurfacePatch(opt) : this.buildPatch(opt);
     this.warnings.set(t.id, this.warningFor(t, opt, geo));
     if (!geo) return;
     const mat = new THREE.MeshStandardMaterial({ transparent: true, opacity: t.opacity, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 - (t.order % 50), roughness: 0.65, metalness: 0 });
@@ -1416,6 +1478,7 @@ const Decals = {
   },
   warningFor(t, opt, geo) {
     if (!geo) return 'Projection impossible à cet endroit.';
+    if (opt.mode === 'sweep') return opt.overlap ? 'Le motif est plus large que le tour du membre (' + fmt(2 * Math.PI * opt.R0 * 100) + ' cm) : ses bords se chevauchent.' : '';
     if (opt.mode === 'surface') return geo.userData.cut > 30 ? 'Le motif rencontre un pli du corps (aisselle, cou, entrejambe) : la partie incohérente n\u2019est pas projetée. Déplacez-le ou réduisez-le.' : '';
     const R = (Body.regionInfo[t.region] || {}).r;
     if (opt.mode === 'wrap' && R && opt.w > 2 * Math.PI * (opt.R0 || R) * 1.02) return 'Le motif fait plus que le tour du membre : il est coupé à la couture.';
@@ -2036,6 +2099,7 @@ const UI = {
     b.append(h('div', { class: 'field' }, h('span', {}, 'Nom'), h('input', { class: 'inp', value: t.name, disabled: dis, onchange: (e) => { set({ name: e.target.value.slice(0, 80) }, '', false); this.renderLayers(); } })));
     b.append(h('div', { class: 'sec' }, h('h4', {}, 'Statut'), this.seg([['existing', 'Existant'], ['project', 'Projet']], t.status, (v) => { set({ status: v }, '', false); this.renderRight(); this.renderLayers(); }, dis)));
     b.append(h('div', { class: 'note' }, 'Zone : ', h('b', {}, t.zone), h('br'), 'Dimensions de projection : ', h('b', {}, fmt(eff.w * 100) + ' × ' + fmt(eff.h * 100) + ' cm'),
+      Decals.limbChain && !Body.isCustom && Decals.limbChain(t.region) && t.mode !== 'planar' ? h('div', { class: 'muted' }, 'Bras/jambe : le motif est déroulé autour du membre (tour complet sans couture). Tour du membre ici : ' + fmt(2 * Math.PI * (Body.regionInfo[t.region] || { r: 0 }).r * 100) + ' cm env.') :
       h('div', { class: 'muted' }, { surface: 'Épouse la peau : largeur et hauteur mesurées en suivant la surface du corps.', wrap: 'Enroulé : la largeur est mesurée autour du membre (sur la surface).', planar: 'Projection plane : largeur et hauteur mesurées dans le plan du motif.' }[t.mode])));
     if (warn) b.append(h('div', { class: 'note warn' }, warn));
     if (lockedAll) b.append(h('div', { class: 'note' }, 'Motif verrouillé : ses réglages sont protégés.'));
