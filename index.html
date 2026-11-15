@@ -3667,6 +3667,43 @@ const Variants = {
 };
 
 // ---------------------------------------------------------------- assistant IA (optionnel, service à déployer soi-même)
+// clavier intégré (AZERTY) : secours quand l'iPad n'affiche pas son clavier (clavier physique ou Bluetooth détecté)
+const VKeyboard = {
+  open(field, onChange) {
+    document.querySelectorAll('.vkb').forEach(n => n.remove());
+    let shift = false, alt = false;
+    const rows = [['a', 'z', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'], ['q', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'm'], ['w', 'x', 'c', 'v', 'b', 'n', "'", ',', '.', '-']];
+    const alts = [['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'], ['é', 'è', 'ê', 'à', 'â', 'ù', 'ç', 'ô', 'î', 'ë'], ['(', ')', '/', ':', ';', '!', '?', '"', '&', '+']];
+    const set = (v) => { field.value = v; onChange && onChange(v); field.dispatchEvent(new Event('input', { bubbles: true })); };
+    const box = h('div', { class: 'vkb', style: { position: 'fixed', left: '0', right: '0', bottom: '0', zIndex: '10000', background: '#1d1c22', borderTop: '1px solid #3a3842', padding: '8px 6px calc(10px + env(safe-area-inset-bottom))', boxShadow: '0 -8px 30px rgba(0,0,0,.5)' } });
+    const preview = h('div', { style: { color: '#eee', font: '15px/1.3 system-ui', padding: '4px 8px 8px', minHeight: '22px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: '64px', overflow: 'auto' } });
+    const keys = h('div');
+    const key = (label, fn, flex = 1, hl) => h('button', { type: 'button', style: { flex: String(flex), margin: '3px', height: '48px', borderRadius: '8px', border: '0', background: hl ? '#c9a46a' : '#3a3842', color: hl ? '#111' : '#f2f2f2', fontSize: '19px', fontWeight: '600' }, onpointerdown: (e) => { e.preventDefault(); fn(); } }, label);
+    const draw = () => {
+      preview.textContent = (field.value || '') + '▏';
+      keys.innerHTML = '';
+      (alt ? alts : rows).forEach(r => keys.append(h('div', { style: { display: 'flex' } }, r.map(c => key(shift && !alt ? c.toUpperCase() : c, () => { set(field.value + (shift && !alt ? c.toUpperCase() : c)); if (shift) { shift = false; } draw(); })))));
+      keys.append(h('div', { style: { display: 'flex' } },
+        key(alt ? 'ABC' : '123 é', () => { alt = !alt; draw(); }, 1.6), key('⇧', () => { shift = !shift; draw(); }, 1, shift),
+        key('espace', () => { set(field.value + ' '); draw(); }, 4.5), key('⌫', () => { set(field.value.slice(0, -1)); draw(); }, 1.3),
+        key('OK', () => box.remove(), 1.4, true)));
+    };
+    box.append(preview, keys); document.body.append(box); draw();
+  },
+};
+// sur tablette : petit bouton ⌨ près de tout champ texte actif, pour ouvrir le clavier intégré si celui de l'iPad ne vient pas
+if (matchMedia('(pointer:coarse)').matches) {
+  let fab = null;
+  document.addEventListener('focusin', (e) => {
+    const el = e.target; if (!el.matches || !el.matches('input[type=text],input[type=number],input[type=password],input:not([type]),textarea') || el.closest('.vkb')) return;
+    if (!fab) { fab = h('button', { type: 'button', style: { position: 'fixed', zIndex: '9999', width: '44px', height: '44px', borderRadius: '22px', border: '0', background: '#c9a46a', color: '#111', fontSize: '22px', boxShadow: '0 4px 14px rgba(0,0,0,.5)' } }, '⌨'); document.body.append(fab); }
+    const r = el.getBoundingClientRect(); fab.style.left = Math.min(innerWidth - 52, r.right - 48) + 'px'; fab.style.top = Math.max(8, r.top - 50) + 'px'; fab.style.display = 'block';
+    fab.onpointerdown = (ev) => { ev.preventDefault(); fab.style.display = 'none'; VKeyboard.open(el, () => el.dispatchEvent(new Event('change', { bubbles: true }))); };
+  });
+  document.addEventListener('focusout', () => setTimeout(() => { if (fab && !document.activeElement.matches('input,textarea')) fab.style.display = 'none'; }, 150));
+}
+const kbBtn = (field, onChange, label = '⌨ Clavier InkBody') => h('button', { type: 'button', class: 'btn sm', onclick: () => VKeyboard.open(field, onChange) }, label);
+
 const AI = {
   // par défaut : le service intégré au serveur Railway (même adresse que le site). Une autre adresse reste possible.
   get endpoint() { return localStorage.getItem('inkbody.ai.endpoint') || (/^https?:$/.test(location.protocol) && !/github\.io$/.test(location.hostname) ? location.origin + '/api/ai' : ''); },
@@ -3708,14 +3745,14 @@ const AI = {
       const ta = h('textarea', { class: 'inp', rows: 3, autocapitalize: 'sentences', enterkeyhint: 'done', style: { fontSize: '16px' }, placeholder: st.mode === 'manchette' ? 'Ex. : grande rose sur l’épaule, roi d’échecs sur le biceps, volutes baroques, fleurs sur l’avant-bras, rose sur le dos de la main' : 'Ex. : rose réaliste avec feuilles, ombrage doux', value: st.prompt, oninput: (e) => st.prompt = e.target.value.slice(0, 1000) });
       const styles = ['réaliste noir et gris', 'fine line', 'dotwork', 'blackwork', 'ornemental', 'traditionnel', 'néo-traditionnel', 'japonais', 'géométrique', 'aquarelle'];
       // secours iPad : si le clavier ne s'ouvre pas (clavier physique, Apple Pencil/Griffonner, bug d'app écran d'accueil), saisie par la boîte système
-      const typeBtn = h('button', { class: 'btn sm', style: { marginTop: '6px' }, onclick: () => { const v = prompt('Décrivez votre tatouage :', st.prompt); if (v != null) { st.prompt = v.slice(0, 1000); ta.value = st.prompt; } } }, '⌨ Le clavier ne s’ouvre pas ? Saisir ici');
+      const typeBtn = h('div', { style: { marginTop: '6px' } }, kbBtn(ta, (v) => st.prompt = v.slice(0, 1000), '⌨ Le clavier ne s’ouvre pas ? Clavier InkBody'));
       form.append(h('div', { class: 'sec' }, h('h4', {}, '2. Votre idée'), ta, typeBtn, h('select', { class: 'inp', style: { marginTop: '8px' }, onchange: (e) => st.style = e.target.value }, styles.map(x => h('option', { selected: x === st.style }, x)))));
       const refGrid = h('div', { class: 'lib', style: { marginBottom: '8px' } });
       for (const l of S.project.library.slice(0, 24)) { const img = h('img'); Images.url(l.imageId).then(u => img.src = u); refGrid.append(h('button', { class: 'lib-item' + (st.refs.has(l.id) ? ' on' : ''), title: l.name, onclick: () => { st.refs.has(l.id) ? st.refs.delete(l.id) : st.refs.size < 3 && st.refs.add(l.id); draw(); } }, img)); }
       form.append(h('div', { class: 'sec' }, h('h4', {}, '3. Motifs à reprendre (facultatif, 3 max)'), h('p', { class: 'muted' }, 'Ex. : votre rose ou votre roi d’échecs : l’IA reprend leur style et les intègre.'), S.project.library.length ? refGrid : h('p', { class: 'muted' }, 'Bibliothèque vide.')));
       const codeIn = h('input', { class: 'inp', type: 'password', autocomplete: 'off', style: { fontSize: '16px' }, placeholder: 'Code d’accès (ACCESS_CODE)', value: this.accessCode, oninput: (e) => this.accessCode = e.target.value });
       const remember = h('input', { type: 'checkbox', checked: localStorage.getItem('inkbody.ai.noremember') !== '1' });
-      const codeBtn = h('button', { class: 'btn sm', onclick: () => { const v = prompt('Code d’accès :', ''); if (v != null) { this.accessCode = v.trim(); codeIn.value = this.accessCode; } } }, '⌨ Saisir');
+      const codeBtn = kbBtn(codeIn, (v) => this.accessCode = v.trim(), '⌨ Clavier');
       form.append(h('div', { class: 'field' }, h('span', {}, 'Code d’accès'), h('div', { class: 'row' }, codeIn, codeBtn)), h('label', { class: 'chk' }, remember, 'Se souvenir du code sur cet appareil'));
       if (st.mode !== 'composition') form.append(h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: st.auto, onchange: (e) => st.auto = e.target.checked }), 'Poser automatiquement le résultat sur l’avatar'));
       form.append(h('button', { class: 'btn primary', style: { width: '100%', marginTop: '10px' }, onclick: () => {
