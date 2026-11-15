@@ -334,7 +334,7 @@ import { mergeVertices } from './assets/lib/addons/BufferGeometryUtils.js';
 import { MeshBVH, acceleratedRaycast } from './assets/lib/three-mesh-bvh.module.js';
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-const APP_VERSION = '2.1.2';
+const APP_VERSION = '3.0.0';
 const PROJECT_FORMAT = 'inkbody-project';
 const PROJECT_VERSION = 1;
 const EXPORT_FORMAT = 'inkbody-export';
@@ -486,20 +486,22 @@ const Images = {
 };
 
 // ---------------------------------------------------------------- modèle de projet
-const DEFAULT_PARAMS = { corpulence: 0, shoulders: 0, chest: 0, waist: 0, hips: 0, breasts: 0, upperarm: 0, forearm: 0, thigh: 0, calf: 0, legs: 0 };
+const DEFAULT_PARAMS = { gender: 0, muscle: 0, corpulence: 0, shoulders: 0, chest: 0, waist: 0, hips: 0, breasts: 0, upperarm: 0, forearm: 0, thigh: 0, calf: 0, legs: 0 };
 const PRESETS = {
   neutre: { label: 'Neutre', p: {} },
-  masculine: { label: 'Masculine', p: { shoulders: .55, chest: .35, hips: -.35, waist: -.1, upperarm: .2, forearm: .2 } },
-  feminine: { label: 'Féminine', p: { shoulders: -.55, hips: .75, waist: .6, breasts: .55, chest: -.15, thigh: .3, upperarm: -.35, forearm: -.3, calf: .1 } },
-  athletique: { label: 'Athlétique', p: { shoulders: .8, chest: .7, upperarm: .65, forearm: .55, waist: .35, corpulence: -.25, thigh: .45, calf: .45 } },
-  mince: { label: 'Mince', p: { corpulence: -.75, upperarm: -.3, thigh: -.3, calf: -.2 } },
-  ronde: { label: 'Ronde', p: { corpulence: .85, hips: .3, thigh: .2, upperarm: .2 } },
+  masculine: { label: 'Homme', p: { gender: 1, muscle: 0.15 } },
+  feminine: { label: 'Femme', p: { gender: -1, breasts: 0.1 } },
+  athletique: { label: 'Athlétique', p: { gender: 0.85, muscle: 0.85, corpulence: -0.25, shoulders: 0.4 } },
+  athletiqueF: { label: 'Sportive', p: { gender: -0.9, muscle: 0.6, corpulence: -0.3 } },
+  mince: { label: 'Mince', p: { corpulence: -0.8, muscle: -0.2 } },
+  ronde: { label: 'Ronde', p: { corpulence: 0.85 } },
+  fort: { label: 'Corpulent', p: { gender: 0.9, corpulence: 0.75, muscle: 0.3 } },
 };
 function newProject(name = 'Mon projet') {
   const vid = uid('var_');
   return {
     format: PROJECT_FORMAT, version: PROJECT_VERSION, id: uid('prj_'), name, createdAt: Date.now(), updatedAt: Date.now(),
-    avatar: { preset: 'neutre', heightCm: 175, params: { ...DEFAULT_PARAMS }, skin: '#c99b7d', hair: { style: 'court', color: '#2a211b' }, beard: { style: 'none', color: '#2a211b' }, measures: { upperarm: null, forearm: null, chest: null, thigh: null, calf: null }, face: null, customModel: null },
+    avatar: { preset: 'neutre', heightCm: 175, params: { ...DEFAULT_PARAMS }, skin: '#c99b7d', eyes: '#5b3a24', hair: { style: 'court', color: '#2a211b' }, beard: { style: 'none', color: '#2a211b' }, measures: { upperarm: null, forearm: null, chest: null, thigh: null, calf: null }, face: null, customModel: null },
     library: [], variants: [{ id: vid, name: 'Original', createdAt: Date.now(), tattoos: [] }], activeVariantId: vid,
     settings: { grid: false },
   };
@@ -719,20 +721,20 @@ const Engine = {
   zonePose(zone) {
     const B = Body.bones; if (!B) return null;
     const mid = (b) => new THREE.Vector3().addVectors(b.a, b.b).multiplyScalar(0.5);
-    const k = Body.k || 1;
+    const k = Body.k || 1, lm = Body.lm;
     const Z = {
-      head: () => ({ t: new THREE.Vector3(0, Body.height - 0.12 * k, 0.02 * k), dir: [0.25, 0.05, 1], d: 0.62 }),
+      head: () => ({ t: lm ? lm.eyeMid.clone().setX(0) : new THREE.Vector3(0, Body.height - 0.12 * k, 0.02 * k), dir: [0.25, 0.05, 1], d: 0.62 }),
       neck: () => ({ t: mid(B.neck), dir: [0.3, 0.05, 1], d: 0.6 }),
-      chest: () => ({ t: new THREE.Vector3(0, 1.22 * k, 0), dir: [0, 0.05, 1], d: 1.2 }),
-      back: () => ({ t: new THREE.Vector3(0, 1.2 * k, 0), dir: [0, 0.05, -1], d: 1.25 }),
+      chest: () => ({ t: new THREE.Vector3(0, lm ? lm.ribY : 1.22 * k, 0), dir: [0, 0.05, 1], d: 1.2 }),
+      back: () => ({ t: new THREE.Vector3(0, lm ? lm.ribY : 1.2 * k, 0), dir: [0, 0.05, -1], d: 1.25 }),
       upperarm_l: () => ({ t: mid(B.upperarm_l), dir: [1, 0.1, 0.5], d: 0.75 }),
       upperarm_r: () => ({ t: mid(B.upperarm_r), dir: [-1, 0.1, 0.5], d: 0.75 }),
       forearm_l: () => ({ t: mid(B.forearm_l), dir: [1, 0.1, 0.6], d: 0.7 }),
       forearm_r: () => ({ t: mid(B.forearm_r), dir: [-1, 0.1, 0.6], d: 0.7 }),
       hands: () => ({ t: mid(B.hand_l), dir: [1, 0.1, 0.4], d: 0.5 }),
-      thighs: () => ({ t: new THREE.Vector3(0, 0.72 * k, 0), dir: [0, 0, 1], d: 1.25 }),
-      calves: () => ({ t: new THREE.Vector3(0, 0.33 * k, 0), dir: [0, 0.05, -1], d: 1.15 }),
-      feet: () => ({ t: new THREE.Vector3(0, 0.06 * k, 0.04), dir: [0, 0.55, 1], d: 0.85 }),
+      thighs: () => ({ t: new THREE.Vector3(0, lm ? (lm.hipY + lm.kneeY) / 2 : 0.72 * k, 0), dir: [0, 0, 1], d: 1.25 }),
+      calves: () => ({ t: new THREE.Vector3(0, lm ? (lm.kneeY + lm.ankleY) / 2 : 0.33 * k, 0), dir: [0, 0.05, -1], d: 1.15 }),
+      feet: () => ({ t: new THREE.Vector3(0, lm ? lm.ankleY * 0.6 : 0.06 * k, 0.04), dir: [0, 0.55, 1], d: 0.85 }),
     };
     const f = Z[zone]; if (!f) return null; const z = f();
     return { target: z.t, position: z.t.clone().addScaledVector(new THREE.Vector3(...z.dir).normalize(), z.d * Math.max(0.8, k)) };
@@ -759,14 +761,15 @@ const Engine = {
 // ---------------------------------------------------------------- corps
 const Body = {
   mesh: null, isCustom: false, k: 1, height: 1.75, bones: null, regionInfo: {},
-  async loadMannequin(onProgress) {
-    const meta = await (await fetch('assets/models/mannequin.json')).json();
-    if (meta.format !== 'inkbody-mannequin') throw new Error('Modèle de base invalide');
-    // version compressée (gzip, ~2 Mo) décompressée dans le navigateur ; repli sur la version brute (5,5 Mo)
+  REGIONS: ['head', 'neck', 'torso', 'upperarm_l', 'upperarm_r', 'forearm_l', 'forearm_r', 'hand_l', 'hand_r', 'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r'],
+  // ---- chargement du corps humain (maillage + morphologies MakeHuman, CC0)
+  async loadHuman(onProgress) {
+    const meta = await (await fetch('assets/models/human.json')).json();
+    if (meta.format !== 'inkbody-human') throw new Error('Modèle de base invalide');
+    // version compressée (~0,5 Mo) décompressée dans le navigateur ; repli sur la version brute (~2 Mo, iOS 15)
     const get = async (url, gz) => {
       const res = await fetch(url); if (!res.ok) throw new Error('Modèle 3D introuvable (' + url + ')');
       const total = Number(res.headers.get('content-length')) || 0;
-      // navigateurs anciens (iOS 15) : pas de flux transformables → lecture directe
       if (!gz && (!res.body || typeof TransformStream === 'undefined' || !res.body.pipeThrough)) { const b = await res.arrayBuffer(); onProgress && onProgress(1); return b; }
       let got = 0;
       let stream = res.body.pipeThrough(new TransformStream({ transform(chunk, ctl) { got += chunk.length; if (total && onProgress) onProgress(Math.min(1, got / total)); ctl.enqueue(chunk); } }));
@@ -774,116 +777,171 @@ const Body = {
       return new Response(stream).arrayBuffer();
     };
     let buf = null;
-    if (typeof DecompressionStream !== 'undefined' && typeof TransformStream !== 'undefined') { try { buf = await get('assets/models/mannequin.bin.gz', true); } catch (e) { buf = null; } }
-    if (!buf || buf.byteLength < 1000) buf = await get('assets/models/mannequin.bin', false);
-    this.meta = meta;
-    const nV = meta.vertexCount;
-    const q = new Uint16Array(buf, meta.layout.position, nV * 3);
-    const P = new Float32Array(nV * 3);
-    for (let i = 0; i < nV * 3; i++) { const a = i % 3; P[i] = meta.min[a] + (q[i] / 65535) * (meta.max[a] - meta.min[a]); }
-    const index = new Uint32Array(buf, meta.layout.index, meta.indexCount).slice();
-    const region = new Uint8Array(buf, meta.layout.region, nV).slice();
-    const W = new Uint8Array(buf, meta.layout.weights, nV * meta.groups.length).slice();
-    this.boneBase = {}; for (const [k, b] of Object.entries(meta.bones)) this.boneBase[k] = { a: new THREE.Vector3(...b.a), b: new THREE.Vector3(...b.b) };
-    this.regionNames = meta.regions;
-    this.setup(P, index, region, W, false);
+    if (typeof DecompressionStream !== 'undefined' && typeof TransformStream !== 'undefined') { try { buf = await get('assets/models/human.bin.gz', true); } catch (e) { buf = null; } }
+    if (!buf || buf.byteLength < 1000) buf = await get('assets/models/human.bin', false);
+    const T = { Float32Array, Uint16Array, Uint8Array, Int8Array };
+    const arr = (name) => { const l = meta.layout[name]; return new T[l.type](buf, l.offset, l.length); };
+    const K = meta.keepCount;
+    const H = this.H = { meta, K, base: arr('basePos'), morphs: meta.morphs.map(m => ({ name: m.name, scale: m.scale, q: arr('m:' + m.name) })), pos: new Float32Array(K * 3) };
+    H.morphIndex = Object.fromEntries(H.morphs.map((m, i) => [m.name, i]));
+    // sous-maillages en indices locaux
+    const local = (keepIds) => { const m = new Int32Array(K).fill(-1); keepIds.forEach((v, i) => m[v] = i); return m; };
+    const remapQuads = (q, m) => { const o = new Uint32Array(q.length); for (let i = 0; i < q.length; i++) o[i] = m[q[i]]; return o; };
+    H.bodyIdx = arr('bodyIdx'); const bm = local(H.bodyIdx);
+    H.ccBody = buildCC(remapQuads(arr('bodyQuads'), bm), H.bodyIdx.length);
+    const eyeVerts = arr('eyeVerts'); const eyeLQ = arr('eyeLQuads'), eyeRQ = arr('eyeRQuads');
+    H.eyeIdx = eyeVerts; const em = local(eyeVerts);
+    const eyeQuads = new Uint32Array([...remapQuads(eyeLQ, em), ...remapQuads(eyeRQ, em)]);
+    H.ccEye1 = buildCC(eyeQuads, eyeVerts.length); H.ccEye2 = buildCC(H.ccEye1.quads, H.ccEye1.n);
+    const eyeAng = H.ccEye2.apply(H.ccEye1.apply(arr('eyeAngle'), 1), 1); H.eyeAngle = eyeAng;
+    const hairQ = arr('hairQuads'); H.hairIdx = [...new Set(hairQ)]; const hm = local(H.hairIdx);
+    H.ccHair = buildCC(remapQuads(hairQ, hm), H.hairIdx.length);
+    // attributs statiques subdivisés : poids de groupes, teintes, masques
+    const nb = H.bodyIdx.length, gw = arr('groupW'), gwf = new Float32Array(nb * 9);
+    for (let i = 0; i < nb * 9; i++) gwf[i] = gw[i] / 255;
+    const W = H.ccBody.apply(gwf, 9); const nS = H.ccBody.n;
+    const W8 = new Uint8Array(nS * 9);
+    for (let i = 0; i < nS; i++) { let s2 = 0; for (let k = 0; k < 9; k++) s2 += W[i * 9 + k]; for (let k = 0; k < 9; k++) W8[i * 9 + k] = Math.round(255 * W[i * 9 + k] / (s2 || 1)); }
+    const tint = arr('tint'), tf = new Float32Array(nb * 3); for (let i = 0; i < nb * 3; i++) tf[i] = tint[i] / 255;
+    H.tint = H.ccBody.apply(tf, 3);
+    const masks = arr('masks'), mf = new Float32Array(nb * 3); for (let i = 0; i < nb * 3; i++) mf[i] = masks[i] / 255;
+    const M = H.ccBody.apply(mf, 3);
+    this.beardMask = new Float32Array(nS); this.hairLong = new Float32Array(nS); this.hairMask = new Float32Array(nS);
+    for (let i = 0; i < nS; i++) { this.beardMask[i] = M[i * 3]; this.hairLong[i] = M[i * 3 + 1]; this.hairMask[i] = M[i * 3 + 2]; }
+    // indices triangles du corps subdivisé
+    const qd = H.ccBody.quads, index = new Uint32Array(qd.length / 4 * 6);
+    for (let f = 0, o = 0; f < qd.length / 4; f++) { const a = qd[f * 4], b2 = qd[f * 4 + 1], c = qd[f * 4 + 2], d = qd[f * 4 + 3]; index[o++] = a; index[o++] = b2; index[o++] = c; index[o++] = a; index[o++] = c; index[o++] = d; }
+    H.index = index; H.W8 = W8;
+    this.regionNames = this.REGIONS;
+    // positions par défaut (pour la zone de chaque sommet et le BVH)
+    const P = this.composeHuman({ ...DEFAULT_PARAMS }).body;
+    const region = new Uint8Array(nS); const RG = [['head'], ['neck'], ['torso'], ['upperarm_l', 'upperarm_r'], ['forearm_l', 'forearm_r'], ['hand_l', 'hand_r'], ['thigh_l', 'thigh_r'], ['calf_l', 'calf_r'], ['foot_l', 'foot_r']];
+    for (let i = 0; i < nS; i++) { let best = 0, bw = -1; for (let k = 0; k < 9; k++) if (W8[i * 9 + k] > bw) { bw = W8[i * 9 + k]; best = k; } const names = RG[best]; region[i] = this.REGIONS.indexOf(names.length === 1 ? names[0] : (P[i * 3] >= 0 ? names[0] : names[1])); }
+    H.region = region;
+    this.restoreHuman();
+    // os de référence à 1,75 m (pour estimer les zones d'un modèle GLB importé)
+    this.deform({ heightCm: 175, params: { ...DEFAULT_PARAMS } }, true);
+    this.boneBase = Object.fromEntries(Object.entries(this.bones).map(([n, b]) => [n, { a: b.a.clone(), b: b.b.clone() }]));
+  },
+  restoreHuman() {
+    const H = this.H; const P = this.composeHuman({ ...DEFAULT_PARAMS }).body;
+    this.setup(P, H.index.slice(), H.region, H.W8, false);
+    const col = new THREE.BufferAttribute(Float32Array.from(H.tint), 3); this.geom.setAttribute('color', col);
+    this.material.vertexColors = true; this.material.needsUpdate = true;
+    Eyes.build();
+  },
+  // coefficients des morphologies à partir des réglages
+  morphCoeffs(p) {
+    const H = this.H, c = new Float32Array(H.morphs.length), set = (n, v) => { const i = H.morphIndex[n]; if (i !== undefined && v) c[i] += v; };
+    const w3 = (v) => v < 0.5 ? [1 - 2 * v, 2 * v, 0] : [0, 2 - 2 * v, 2 * v - 1];
+    // les cibles MakeHuman sont subtiles (±2 cm) : extrapolation ×2,2 aux extrêmes pour des silhouettes lisibles
+    const AMP = 2.2;
+    const g = clamp((p.gender + 1) / 2, 0, 1), m = w3(clamp((p.muscle + 1) / 2, 0, 1)), w = w3(clamp((p.corpulence + 1) / 2, 0, 1));
+    const LV = ['min', 'average', 'max'];
+    for (const [gen, gwt] of [['female', 1 - g], ['male', g]]) { for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) set(`u-${gen}-${LV[i]}-${LV[j]}`, gwt * m[i] * w[j] * (i === 1 && j === 1 ? 1 : AMP)); set('race-' + gen, gwt); }
+    if (p.corpulence > 0) set('belly-incr', p.corpulence * 0.7); else set('belly-decr', -p.corpulence * 0.3);
+    const cup = clamp((p.breasts + 1) / 2, 0, 1); set('cup-min', (cup < 0.5 ? 1 - 2 * cup : 0) * (1 - g)); set('cup-max', (cup > 0.5 ? 2 * cup - 1 : 0) * (1 - g));
+    const pm = (name, v) => set(name + (v >= 0 ? '-incr' : '-decr'), Math.abs(v));
+    const pm2 = (name, v, a) => pm(name, v * a);
+    pm2('vshape', p.shoulders, 1.5); pm2('pectoral', p.chest, 1.5); pm2('hips', p.hips, 1.3);
+    pm2('upperarm', p.upperarm, 1.6); pm2('lowerarm', p.forearm, 1.6); pm2('upperleg', p.thigh, 1.6); pm2('lowerleg', p.calf, 1.6);
+    return c;
+  },
+  // positions (non mises à l'échelle) : corps subdivisé, yeux, cheveux, articulations
+  composeHuman(p) {
+    const H = this.H, K = H.K, pos = H.pos; pos.set(H.base);
+    const c = this.morphCoeffs(p);
+    for (let k = 0; k < c.length; k++) { const v = c[k]; if (Math.abs(v) < 1e-4) continue; const q = H.morphs[k].q, s = H.morphs[k].scale * v; for (let i = 0; i < K * 3; i++) pos[i] += q[i] * s; }
+    const gather = (ids) => { const o = new Float32Array(ids.length * 3); for (let i = 0; i < ids.length; i++) { const v = ids[i] * 3; o[i * 3] = pos[v]; o[i * 3 + 1] = pos[v + 1]; o[i * 3 + 2] = pos[v + 2]; } return o; };
+    const joints = {}; for (const [n, ids] of Object.entries(H.meta.joints)) { const j = new THREE.Vector3(); for (const v of ids) j.x += pos[v * 3], j.y += pos[v * 3 + 1], j.z += pos[v * 3 + 2]; joints[n] = j.multiplyScalar(1 / ids.length); }
+    const mouth = new THREE.Vector3(); for (const v of H.meta.mouthVerts) { mouth.x += pos[v * 3]; mouth.y += pos[v * 3 + 1]; mouth.z += pos[v * 3 + 2]; } mouth.multiplyScalar(1 / H.meta.mouthVerts.length);
+    return { body: H.ccBody.apply(gather(H.bodyIdx), 3), joints, mouth, eyesRaw: gather(H.eyeIdx), hairRaw: gather(H.hairIdx) };
   },
   setup(P, index, region, W, custom) {
     if (this.mesh) { Engine.scene.remove(this.mesh); this.mesh.geometry.dispose(); }
-    this.isCustom = custom; this.modelKey = custom ? 'custom' : 'mannequin';
+    this.isCustom = custom; this.modelKey = custom ? 'custom' : 'human1';
     this.P0 = P; this.REG = region; this.W = W; this.nV = P.length / 3; this.nF = index.length / 3;
     const geom = new THREE.BufferGeometry();
     geom.setAttribute('position', new THREE.BufferAttribute(new Float32Array(P), 3));
     geom.setIndex(new THREE.BufferAttribute(index, 1));
     geom.computeVertexNormals();
-    this.N0 = new Float32Array(geom.attributes.normal.array);
     this.geom = geom; this.index = index;
-    // zone par face (vote majoritaire)
     const fr = this.faceRegion = new Uint8Array(this.nF);
     for (let f = 0; f < this.nF; f++) { const a = region[index[f * 3]], b = region[index[f * 3 + 1]], c = region[index[f * 3 + 2]]; fr[f] = (b === c) ? b : a; }
-    // adjacence sommet → faces (CSR)
     const cnt = new Uint32Array(this.nV + 1);
     for (let i = 0; i < index.length; i++) cnt[index[i] + 1]++;
     for (let i = 0; i < this.nV; i++) cnt[i + 1] += cnt[i];
     const fill = cnt.slice(0, this.nV); const list = new Uint32Array(index.length);
     for (let i = 0; i < index.length; i++) list[fill[index[i]]++] = (i / 3) | 0;
     this.vfStart = cnt; this.vfList = list;
-    this.stamp = new Uint32Array(this.nF); this.gen = 1;
-    const mat = this.material || (this.material = new THREE.MeshStandardMaterial({ color: 0xc99b7d, roughness: 0.58, metalness: 0 }));
+    this.stamp = new Uint32Array(this.nF); this.gen = 1; this.geo = null;
+    // peau : léger voile (sheen) pour un rendu moins plastique
+    const mat = this.material || (this.material = new THREE.MeshPhysicalMaterial({ color: 0xc99b7d, roughness: 0.52, metalness: 0, sheen: 0.35, sheenRoughness: 0.55, sheenColor: new THREE.Color(0xffc9b0), clearcoat: 0.04, clearcoatRoughness: 0.6 }));
+    mat.vertexColors = false; mat.needsUpdate = true;
     this.mesh = new THREE.Mesh(geom, mat); this.mesh.name = 'body'; this.mesh.renderOrder = 0;
     Engine.scene.add(this.mesh);
-    // BVH construit une seule fois sur le maillage de base (indices conservés : mode indirect)
     geom.boundsTree = new MeshBVH(geom, { indirect: true, maxLeafTris: 8 });
-    this.buildMasks();
+    if (custom) { Eyes.clear(); this.beardMask = null; this.hairLong = null; }
   },
   regionName(f) { return this.regionNames[this.faceRegion[f]] || 'body'; },
-  // ---- déformation contrôlée (équivalent de morph targets analytiques, continu entre zones)
+  // ---- déformation : morphologies réelles + ajustements locaux + longueur de jambes + échelle à la taille
   deform(av, light = false) {
     const p = { ...DEFAULT_PARAMS, ...av.params };
-    const P0 = this.P0, N0 = this.N0, out = this.geom.attributes.position.array, nV = this.nV;
+    const out = this.geom.attributes.position.array, nV = this.nV;
     let k;
     if (this.isCustom) {
       k = (av.heightCm / 100) / this.baseHeight;
-      for (let i = 0; i < nV * 3; i++) out[i] = P0[i] * k;
-      this.boneScale = k;
+      for (let i = 0; i < nV * 3; i++) out[i] = this.P0[i] * k;
+      this.k = k; this.legL = 1; this.lm = null;
     } else {
-      const W = this.W, G = this.meta.groups.length, hipY = this.meta.hipY;
-      const L = 1 + p.legs * 0.06; const baseH = this.meta.baseHeight + hipY * (L - 1);
-      k = (av.heightCm / 100) / baseH;
-      const c = p.corpulence;
+      const C = this.composeHuman(p); const B = C.body; const J = C.joints;
+      const hipY = (J['l-upper-leg'].y + J['r-upper-leg'].y) / 2, L = 1 + p.legs * 0.06;
+      const waistY = J['spine-3'].y * 0.55 + J['spine-2'].y * 0.45;
+      // taille affinée : léger retrait le long des normales (normales de la frame précédente, suffisantes)
+      const N = this.geom.attributes.normal.array, W = this.W;
+      let maxY = 0;
       for (let i = 0; i < nV; i++) {
-        const x = P0[i * 3], y = P0[i * 3 + 1], z = P0[i * 3 + 2];
-        const nx = N0[i * 3], nz = N0[i * 3 + 2];
-        const o = i * G; const wH = W[o] / 255, wN = W[o + 1] / 255, wT = W[o + 2] / 255, wUA = W[o + 3] / 255, wFA = W[o + 4] / 255, wHA = W[o + 5] / 255, wTH = W[o + 6] / 255, wCA = W[o + 7] / 255, wFT = W[o + 8] / 255;
-        const sx = x >= 0 ? 1 : -1; const out_ = Math.max(0, nx * sx);
-        let off = c * (0.022 * wT + 0.011 * wUA + 0.008 * wFA + 0.018 * wTH + 0.01 * wCA + 0.007 * wN + 0.0025 * wHA + 0.002 * wH * smoothstep(1.62, 1.52, y));
-        const gb = Math.exp(-((y - 1.07) ** 2) / (2 * 0.085 ** 2));
-        off += (c > 0 ? c * 0.034 : c * 0.012) * wT * gb * Math.max(0, nz);
-        if (c > 0) off += c * 0.012 * wT * gb * Math.abs(nx);
-        off += p.chest * 0.02 * wT * Math.exp(-((y - 1.29) ** 2) / (2 * 0.08 ** 2));
-        off -= p.waist * 0.016 * wT * Math.exp(-((y - 1.11) ** 2) / (2 * 0.06 ** 2)) * (0.25 + 0.75 * Math.abs(nx));
-        off += p.hips * 0.024 * (wT * Math.exp(-((y - 0.95) ** 2) / (2 * 0.07 ** 2)) * (0.3 + 0.7 * Math.abs(nx)) + wTH * Math.exp(-((y - 0.84) ** 2) / (2 * 0.08 ** 2)) * (0.2 + 0.8 * out_));
-        if (p.breasts > 0) for (const s of [-1, 1]) { const dx = x - 0.085 * s, dy = y - 1.268; off += p.breasts * 0.042 * Math.exp(-(dx * dx + dy * dy) / (2 * 0.046 ** 2)) * Math.max(0, nz) * wT; }
-        off += p.upperarm * 0.012 * wUA + p.forearm * 0.009 * wFA + p.thigh * 0.018 * wTH + p.calf * 0.012 * wCA;
-        off += p.shoulders * 0.008 * wUA * Math.exp(-((y - 1.37) ** 2) / (2 * 0.06 ** 2));
-        let px = x + N0[i * 3] * off, py = y + N0[i * 3 + 1] * off, pz = z + nz * off;
-        const armW = wUA + wFA + wHA, legW = wTH + wCA + wFT;
-        const shoulderPart = wT * smoothstep(1.18, 1.38, y) * smoothstep(0.05, 0.17, Math.abs(x));
-        px += sx * (p.shoulders * 0.03 * (armW + 0.75 * shoulderPart) + Math.max(0, c) * 0.018 * armW + Math.max(0, p.upperarm) * 0.006 * armW);
-        px += sx * (Math.max(0, c) * 0.012 + Math.max(0, p.thigh) * 0.008 + Math.max(0, p.hips) * 0.008) * legW;
-        py = legW * (py * L) + (1 - legW) * (py + hipY * (L - 1));
-        out[i * 3] = px * k; out[i * 3 + 1] = py * k; out[i * 3 + 2] = pz * k;
+        let x = B[i * 3], y = B[i * 3 + 1], z = B[i * 3 + 2];
+        if (p.waist) { const wT = W[i * 9 + 2] / 255; const off = -p.waist * 0.016 * wT * Math.exp(-((y - waistY) ** 2) / (2 * 0.06 ** 2)) * (0.25 + 0.75 * Math.abs(N[i * 3])); x += N[i * 3] * off; y += N[i * 3 + 1] * off; z += N[i * 3 + 2] * off; }
+        const legW = (W[i * 9 + 6] + W[i * 9 + 7] + W[i * 9 + 8]) / 255;
+        y = legW * (y * L) + (1 - legW) * (y + hipY * (L - 1));
+        out[i * 3] = x; out[i * 3 + 1] = y; out[i * 3 + 2] = z; if (y > maxY) maxY = y;
       }
-      this.legL = L;
+      k = (av.heightCm / 100) / maxY;
+      for (let i = 0; i < nV * 3; i++) out[i] *= k;
+      this.k = k; this.legL = L;
+      const up = (v) => new THREE.Vector3(v.x, v.y + hipY * (L - 1), v.z).multiplyScalar(k);
+      const leg = (v) => new THREE.Vector3(v.x, v.y * L, v.z).multiplyScalar(k);
+      const j = (n) => /upper-leg|knee|ankle|toe|foot/.test(n) ? leg(J[n]) : up(J[n]);
+      this.bones = {
+        torso: { a: j('pelvis'), b: j('neck') }, neck: { a: j('neck'), b: j('head') }, head: { a: j('head'), b: j('head-2') },
+        upperarm_l: { a: j('l-shoulder'), b: j('l-elbow') }, forearm_l: { a: j('l-elbow'), b: j('l-hand') }, hand_l: { a: j('l-hand'), b: j('l-finger-3-4') },
+        upperarm_r: { a: j('r-shoulder'), b: j('r-elbow') }, forearm_r: { a: j('r-elbow'), b: j('r-hand') }, hand_r: { a: j('r-hand'), b: j('r-finger-3-4') },
+        thigh_l: { a: j('l-upper-leg'), b: j('l-knee') }, calf_l: { a: j('l-knee'), b: j('l-ankle') }, foot_l: { a: j('l-ankle'), b: j('l-toe-3-3') },
+        thigh_r: { a: j('r-upper-leg'), b: j('r-knee') }, calf_r: { a: j('r-knee'), b: j('r-ankle') }, foot_r: { a: j('r-ankle'), b: j('r-toe-3-3') },
+      };
+      const eyeL = j('l-eye'), eyeR = j('r-eye'), mouth = up(C.mouth);
+      this.lm = {
+        eyeL, eyeR, eyeMid: eyeL.clone().add(eyeR).multiplyScalar(0.5), mouth, head: j('head'), headTop: maxY * k,
+        chestY: j('spine-2').y * 0.3 + j('spine-1').y * 0.7, ribY: j('spine-2').y * 0.6 + j('spine-1').y * 0.4, waistY: up(new THREE.Vector3(0, waistY, 0)).y, pelvisY: j('pelvis').y,
+        kneeY: (j('l-knee').y + j('r-knee').y) / 2, ankleY: (j('l-ankle').y + j('r-ankle').y) / 2, hipY: hipY * L * k,
+      };
+      this._C = C; this._hipY = hipY;
     }
-    this.k = k;
     this.geom.attributes.position.needsUpdate = true;
-    if (light) { this.updateBones(p); return; }
+    if (light) return;
     this.geom.computeVertexNormals();
     this.geom.computeBoundingBox(); this.geom.computeBoundingSphere();
     this.geom.boundsTree.refit();
     this.height = this.geom.boundingBox.max.y;
-    this.updateBones(p);
+    if (this.isCustom) this.updateBonesCustom();
     this.computeRegionInfo();
+    if (!this.isCustom) Eyes.update(this._C, this._hipY);
     Hair.rebuild();
     Engine.requestRender();
   },
-  warpPoint(v, kind, p) {
-    const out = v.clone();
-    if (this.isCustom) return out.multiplyScalar(this.k);
-    const c = p.corpulence, hipY = this.meta.hipY, L = this.legL || 1;
-    const sx = v.x >= 0 ? 1 : -1;
-    if (kind === 'arm') out.x += sx * (p.shoulders * 0.03 + Math.max(0, c) * 0.018 + Math.max(0, p.upperarm) * 0.006);
-    if (kind === 'leg') { out.x += sx * (Math.max(0, c) * 0.012 + Math.max(0, p.thigh) * 0.008 + Math.max(0, p.hips) * 0.008); out.y *= L; }
-    else out.y += hipY * (L - 1);
-    return out.multiplyScalar(this.k);
-  },
-  updateBones(p) {
-    const B = {};
-    for (const [name, b] of Object.entries(this.boneBase)) {
-      const kind = /arm|hand/.test(name) ? 'arm' : /thigh|calf|foot/.test(name) ? 'leg' : 'core';
-      B[name] = { a: this.warpPoint(b.a, kind, p), b: this.warpPoint(b.b, kind, p) };
-    }
+  updateBonesCustom() {
+    const B = {}; for (const [n, b] of Object.entries(this.boneBase || {})) B[n] = { a: b.a.clone().multiplyScalar(this.k), b: b.b.clone().multiplyScalar(this.k) };
     this.bones = B;
   },
   // rayon moyen par zone (sert au mode « suit la morphologie » et à l'enroulement)
@@ -891,7 +949,7 @@ const Body = {
     const P = this.geom.attributes.position.array, info = {};
     const acc = {};
     for (let i = 0; i < this.nV; i += 5) {
-      const r = this.regionNames[this.REG[i]]; const b = this.bones[r]; if (!b) continue;
+      const r = this.regionNames[this.REG[i]]; const b = this.bones && this.bones[r]; if (!b) continue;
       const pnt = new THREE.Vector3(P[i * 3], P[i * 3 + 1], P[i * 3 + 2]);
       const d = distToSegment(pnt, b.a, b.b);
       (acc[r] || (acc[r] = [0, 0]))[0] += d; acc[r][1]++;
@@ -934,49 +992,125 @@ const Body = {
     const hits = raycaster.intersectObject(this.mesh, false);
     return hits[0] || null;
   },
-  // ---- masques cheveux / barbe (coordonnées de base du mannequin)
-  buildMasks() {
-    const n = this.nV; this.hairMask = new Float32Array(n); this.hairLong = new Float32Array(n); this.beardMask = new Float32Array(n);
-    if (this.isCustom) return;
-    const P = this.P0, head = this.regionNames.indexOf('head'), neck = this.regionNames.indexOf('neck');
-    for (let i = 0; i < n; i++) {
-      const x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2], r = this.REG[i];
-      if (r === head) {
-        let thr = 1.572 + (1.684 - 1.572) * smoothstep(-0.045, 0.05, z);
-        if (Math.abs(x) > 0.058 && z > -0.025 && z < 0.045) thr = Math.max(thr, 1.668);
-        this.hairMask[i] = smoothstep(thr, thr + 0.008, y);
-        const mouth = Math.hypot(x, (y - 1.567) * 1.3, Math.max(0, 0.088 - z)) < 0.017;
-        let bm = smoothstep(1.606, 1.592, y) * smoothstep(-0.005, 0.02, z) * smoothstep(0.085, 0.07, Math.abs(x)) * smoothstep(1.5, 1.515, y);
-        if (mouth) bm = 0;
-        this.beardMask[i] = bm;
-      }
-      if ((r === head || r === neck) && z < -0.01) this.hairLong[i] = smoothstep(1.43, 1.47, y) * smoothstep(-0.01, -0.035, z);
-    }
-  },
 };
 function distToSegment(p, a, b) {
   const ab = new THREE.Vector3().subVectors(b, a); const t = clamp(new THREE.Vector3().subVectors(p, a).dot(ab) / ab.lengthSq(), 0, 1);
   return p.distanceTo(a.clone().addScaledVector(ab, t));
 }
 
-// ---------------------------------------------------------------- cheveux & barbe (coques suivant la peau)
+// ---------------------------------------------------------------- subdivision Catmull-Clark (linéaire : positions, poids, couleurs)
+function buildCC(quads, n) {
+  const nf = quads.length / 4; const ekey = new Map(); const e0 = [], e1 = [], ef0 = [], ef1 = []; const fe = new Int32Array(nf * 4);
+  for (let f = 0; f < nf; f++) for (let i = 0; i < 4; i++) {
+    const a = quads[f * 4 + i], b = quads[f * 4 + (i + 1) % 4]; const key = a < b ? a * n + b : b * n + a;
+    let id = ekey.get(key); if (id === undefined) { id = e0.length; ekey.set(key, id); e0.push(a); e1.push(b); ef0.push(f); ef1.push(-1); } else ef1[id] = f;
+    fe[f * 4 + i] = id;
+  }
+  const ne = e0.length;
+  const vfc = new Uint32Array(n), vec = new Uint32Array(n), bnd = Array.from({ length: n }, () => []);
+  for (let f = 0; f < nf; f++) for (let i = 0; i < 4; i++) vfc[quads[f * 4 + i]]++;
+  for (let e = 0; e < ne; e++) { vec[e0[e]]++; vec[e1[e]]++; if (ef1[e] < 0) { bnd[e0[e]].push(e1[e]); bnd[e1[e]].push(e0[e]); } }
+  const vfS = new Uint32Array(n + 1), veS = new Uint32Array(n + 1);
+  for (let v = 0; v < n; v++) { vfS[v + 1] = vfS[v] + vfc[v]; veS[v + 1] = veS[v] + vec[v]; }
+  const vfL = new Uint32Array(vfS[n]), veL = new Uint32Array(veS[n]); const fp1 = vfS.slice(0, n), fp2 = veS.slice(0, n);
+  for (let f = 0; f < nf; f++) for (let i = 0; i < 4; i++) vfL[fp1[quads[f * 4 + i]]++] = f;
+  for (let e = 0; e < ne; e++) { veL[fp2[e0[e]]++] = e; veL[fp2[e1[e]]++] = e; }
+  const nOut = n + nf + ne; const oq = new Uint32Array(nf * 16);
+  for (let f = 0, o = 0; f < nf; f++) for (let i = 0; i < 4; i++) { oq[o++] = quads[f * 4 + i]; oq[o++] = n + nf + fe[f * 4 + i]; oq[o++] = n + f; oq[o++] = n + nf + fe[f * 4 + (i + 3) % 4]; }
+  const apply = (src, dim) => {
+    const out = new Float32Array(nOut * dim); const FO = n * dim, EO = (n + nf) * dim;
+    for (let f = 0; f < nf; f++) for (let d = 0; d < dim; d++) { let s = 0; for (let i = 0; i < 4; i++) s += src[quads[f * 4 + i] * dim + d]; out[FO + f * dim + d] = s / 4; }
+    for (let e = 0; e < ne; e++) for (let d = 0; d < dim; d++) {
+      const a = src[e0[e] * dim + d], b = src[e1[e] * dim + d];
+      out[EO + e * dim + d] = ef1[e] < 0 ? (a + b) / 2 : (a + b + out[FO + ef0[e] * dim + d] + out[FO + ef1[e] * dim + d]) / 4;
+    }
+    for (let v = 0; v < n; v++) {
+      const P = v * dim;
+      if (bnd[v].length) { if (bnd[v].length === 2) for (let d = 0; d < dim; d++) out[P + d] = (6 * src[P + d] + src[bnd[v][0] * dim + d] + src[bnd[v][1] * dim + d]) / 8; else for (let d = 0; d < dim; d++) out[P + d] = src[P + d]; continue; }
+      const m = veS[v + 1] - veS[v]; const fc = vfS[v + 1] - vfS[v];
+      if (m < 3 || !fc) { for (let d = 0; d < dim; d++) out[P + d] = src[P + d]; continue; }
+      for (let d = 0; d < dim; d++) {
+        let F = 0; for (let j = vfS[v]; j < vfS[v + 1]; j++) F += out[FO + vfL[j] * dim + d]; F /= fc;
+        let R = 0; for (let j = veS[v]; j < veS[v + 1]; j++) { const e = veL[j]; R += (src[e0[e] * dim + d] + src[e1[e] * dim + d]) / 2; } R /= m;
+        out[P + d] = (F + 2 * R + (m - 3) * src[P + d]) / m;
+      }
+    }
+    return out;
+  };
+  return { n: nOut, quads: oq, apply };
+}
+function quadsToIndex(q) { const o = new Uint32Array(q.length / 4 * 6); for (let f = 0, k = 0; f < q.length / 4; f++) { o[k++] = q[f * 4]; o[k++] = q[f * 4 + 1]; o[k++] = q[f * 4 + 2]; o[k++] = q[f * 4]; o[k++] = q[f * 4 + 2]; o[k++] = q[f * 4 + 3]; } return o; }
+
+// ---------------------------------------------------------------- yeux (sphères MakeHuman, iris coloré)
+const Eyes = {
+  mesh: null,
+  clear() { if (this.mesh) { Engine.scene.remove(this.mesh); this.mesh.geometry.dispose(); this.mesh.material.dispose(); this.mesh = null; } },
+  build() {
+    this.clear(); const H = Body.H; const n = H.ccEye2.n;
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3)); g.setIndex(new THREE.BufferAttribute(quadsToIndex(H.ccEye2.quads), 1));
+    this.mesh = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ vertexColors: true, roughness: 0.18, clearcoat: 1, clearcoatRoughness: 0.05 }));
+    this.mesh.renderOrder = 0; Engine.scene.add(this.mesh); this.colorize();
+  },
+  colorize() {
+    if (!this.mesh) return; const A = Body.H.eyeAngle, c = this.mesh.geometry.attributes.color.array;
+    const iris = new THREE.Color((S.project && S.project.avatar.eyes) || '#5b3a24'); const sclera = new THREE.Color(0xeee9e2);
+    for (let i = 0; i < A.length; i++) {
+      const a = A[i]; let col;
+      if (a < 0.17) col = new THREE.Color(0x0b0807);
+      else if (a < 0.44) { const t = (a - 0.17) / 0.27; col = iris.clone().multiplyScalar(0.75 + 0.45 * t); if (a > 0.4) col.lerp(new THREE.Color(0x201510), 0.5); }
+      else col = sclera.clone().multiplyScalar(a > 1.6 ? 0.8 : 1).lerp(new THREE.Color(0xd9b0a0), smoothstep(1.3, 1.9, a) * 0.4);
+      c[i * 3] = col.r; c[i * 3 + 1] = col.g; c[i * 3 + 2] = col.b;
+    }
+    this.mesh.geometry.attributes.color.needsUpdate = true; Engine.requestRender();
+  },
+  update(C, hipY) {
+    if (!this.mesh) return; const H = Body.H, k = Body.k, L = Body.legL || 1;
+    const P = H.ccEye2.apply(H.ccEye1.apply(C.eyesRaw, 3), 3); const o = this.mesh.geometry.attributes.position.array;
+    for (let i = 0; i < P.length; i += 3) { o[i] = P[i] * k; o[i + 1] = (P[i + 1] + hipY * (L - 1)) * k; o[i + 2] = P[i + 2] * k; }
+    this.mesh.geometry.attributes.position.needsUpdate = true; this.mesh.geometry.computeVertexNormals(); this.mesh.geometry.computeBoundingSphere();
+  },
+};
+
+// ---------------------------------------------------------------- cheveux (calotte MakeHuman) & barbe (coque suivant la peau)
 const Hair = {
-  hair: null, beard: null,
+  hair: null, nape: null, beard: null,
   rebuild() {
-    for (const k of ['hair', 'beard']) if (this[k]) { Engine.scene.remove(this[k]); this[k].geometry.dispose(); this[k].material.dispose(); this[k] = null; }
-    if (!S.project || Body.isCustom) return;
-    const av = S.project.avatar;
-    const hs = av.hair.style, bs = av.beard.style;
+    for (const kk of ['hair', 'nape', 'beard']) if (this[kk]) { Engine.scene.remove(this[kk]); this[kk].geometry.dispose(); this[kk].material.dispose(); this[kk] = null; }
+    if (!S.project || Body.isCustom || !Body.H || !Body._C) return;
+    const av = S.project.avatar; const hs = av.hair.style, bs = av.beard.style;
     if (hs !== 'none') {
-      const mask = (i) => hs === 'milong' ? Math.max(Body.hairMask[i], Body.hairLong[i]) : Body.hairMask[i];
-      const offset = (i, y) => ({ rase: 0.0012, court: 0.0038, volume: 0.004 + 0.013 * smoothstep(1.64, 1.74, y), milong: 0.008 + 0.006 * smoothstep(1.6, 1.72, y) }[hs]);
-      this.hair = this.shell(mask, offset, av.hair.color, hs === 'rase' ? 0.6 : 1);
+      const top = Body.lm ? Body.lm.headTop : Body.height;
+      const P = Body.geom.attributes.position.array;
+      const mask = hs === 'milong' ? (i) => Math.max(Body.hairMask[i], Body.hairLong[i]) : (i) => Body.hairMask[i];
+      const off = (m, i) => ({ rase: 0.0008, court: 0.0032, volume: 0.0035 + 0.014 * smoothstep(top - 0.09, top, P[i * 3 + 1]), milong: 0.0065 + 0.006 * smoothstep(top - 0.1, top, P[i * 3 + 1]) }[hs]);
+      this.hair = this.shell(mask, off, av.hair.color, hs === 'rase' ? 0.6 : 1);
     }
     if (bs !== 'none') {
-      const offset = (i, y) => ({ trois: 0.001, courte: 0.0035, pleine: 0.006 + 0.01 * smoothstep(1.56, 1.51, y) }[bs]);
-      this.beard = this.shell((i) => Body.beardMask[i], offset, av.beard.color, bs === 'trois' ? 0.5 : 1);
+      const off = { trois: 0.0009, courte: 0.0032, pleine: 0.007 }[bs];
+      this.beard = this.shell((i) => Body.beardMask[i], (m) => off * (bs === 'pleine' ? 0.6 + 0.6 * m : 1), av.beard.color, bs === 'trois' ? 0.55 : 1);
     }
     Engine.requestRender();
+  },
+  cap(style, color) {
+    const H = Body.H, k = Body.k, L = Body.legL || 1, hipY = Body._hipY;
+    const P = H.ccHair.apply(Body._C.hairRaw, 3); const n = H.ccHair.n;
+    for (let i = 0; i < n; i++) { P[i * 3] *= k; P[i * 3 + 1] = (P[i * 3 + 1] + hipY * (L - 1)) * k; P[i * 3 + 2] *= k; }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(P, 3)); g.setIndex(new THREE.BufferAttribute(quadsToIndex(H.ccHair.quads), 1)); g.computeVertexNormals();
+    // bord de la calotte fondu (ligne d'implantation douce) : distance topologique au bord
+    const q = H.ccHair.quads, cnt = new Map(); for (let f = 0; f < q.length / 4; f++) for (let i = 0; i < 4; i++) { const a = q[f * 4 + i], b = q[f * 4 + (i + 1) % 4]; const kk = a < b ? a + '_' + b : b + '_' + a; cnt.set(kk, (cnt.get(kk) || 0) + 1); }
+    const dist = new Float32Array(n).fill(99); for (const [kk, c] of cnt) if (c === 1) { const [a, b] = kk.split('_').map(Number); dist[a] = 0; dist[b] = 0; }
+    for (let it = 0; it < 3; it++) for (let f = 0; f < q.length / 4; f++) { let m = 99; for (let i = 0; i < 4; i++) m = Math.min(m, dist[q[f * 4 + i]]); for (let i = 0; i < 4; i++) { const v = q[f * 4 + i]; dist[v] = Math.min(dist[v], m + 1); } }
+    const N = g.attributes.normal.array, top = Math.max(...P.filter((_, i) => i % 3 === 1)); const c = new THREE.Color(color), col = new Float32Array(n * 4);
+    for (let i = 0; i < n; i++) {
+      const y = P[i * 3 + 1]; const t = smoothstep(top - 0.12 * k, top, y);
+      const o = { rase: 0.0006, court: 0.0028, volume: 0.003 + 0.013 * t, milong: 0.006 + 0.005 * t }[style] * (0.4 + 0.6 * Math.min(1, dist[i] / 3));
+      for (let a = 0; a < 3; a++) P[i * 3 + a] += N[i * 3 + a] * o;
+      col[i * 4] = c.r; col[i * 4 + 1] = c.g; col[i * 4 + 2] = c.b; col[i * 4 + 3] = (style === 'rase' ? 0.6 : 1) * Math.min(1, 0.25 + dist[i] / 3);
+    }
+    g.attributes.position.needsUpdate = true; g.computeVertexNormals(); g.setAttribute('color', new THREE.BufferAttribute(col, 4));
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ vertexColors: true, transparent: true, roughness: 0.85, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+    m.renderOrder = 1; Engine.scene.add(m); return m;
   },
   shell(maskFn, offFn, color, opacity) {
     const P = Body.geom.attributes.position.array, N = Body.geom.attributes.normal.array, I = Body.index, k = Body.k;
@@ -987,9 +1121,9 @@ const Hair = {
       if (Math.max(maskFn(a), maskFn(b), maskFn(cc)) < 0.02) continue;
       for (const v of [a, b, cc]) {
         if (map[v] < 0) {
-          map[v] = pos.length / 3; const m = maskFn(v); const o = offFn(v, Body.P0[v * 3 + 1]) * k * (0.25 + 0.75 * m);
+          map[v] = pos.length / 3; const m = maskFn(v); const o = offFn(m, v) * (0.25 + 0.75 * m);
           pos.push(P[v * 3] + N[v * 3] * o, P[v * 3 + 1] + N[v * 3 + 1] * o, P[v * 3 + 2] + N[v * 3 + 2] * o);
-          col.push(c.r, c.g, c.b, smoothstep(0.05, 0.75, m) * opacity); // bord fondu (ligne d'implantation douce)
+          col.push(c.r, c.g, c.b, smoothstep(0.05, 0.75, m) * opacity);
         }
         idx.push(map[v]);
       }
@@ -1315,13 +1449,16 @@ const Face = {
   async rebuild() {
     if (this.mesh) { Engine.scene.remove(this.mesh); this.mesh.geometry.dispose(); this.mesh.material.dispose(); this.mesh = null; }
     const f = S.project.avatar.face; if (!f || !f.imageId) { Engine.requestRender(); return; }
-    // point central du visage : rayon tiré de face à hauteur des yeux
-    const k = Body.k, H = Body.height;
-    const y = (Body.isCustom ? H * 0.93 : 1.626 * k) + f.dy * 0.01;
+    // repères du visage (yeux, bouche) : centre et taille de la texture calés sur l'anatomie du corps
+    const k = Body.k, lm = Body.lm;
+    let cy, w, hh;
+    if (lm) { const d = lm.eyeMid.y - lm.mouth.y; hh = d / 0.30; w = lm.eyeL.distanceTo(lm.eyeR) / 0.34; cy = lm.eyeMid.y - 0.08 * hh; }
+    else { hh = 0.267 * k; w = 0.182 * k; cy = Body.height * 0.93; }
+    const y = cy + f.dy * 0.01;
     const rc = new THREE.Raycaster(new THREE.Vector3(f.dx * 0.01, y, 2), new THREE.Vector3(0, 0, -1));
     const hit = Body.raycast(rc); if (!hit) return;
     const a = Body.anchorFromHit(hit.faceIndex, hit.point); const s = Body.surface(a);
-    const w = 0.182 * k * f.scale, hh = 0.267 * k * f.scale;
+    w *= f.scale; hh *= f.scale;
     const geo = Decals.buildPatch({ p: s.p, n: new THREE.Vector3(0, 0, 1), w, h: hh, rot: f.rot || 0, startFace: s.f, regions: Body.isCustom ? null : ['head'], mode: 'planar', eps: 0.0003, normalMin: 0.05, depth: 0.12 * k });
     if (!geo) return;
     const tex = await Decals.texture(f.imageId, null);
@@ -1402,7 +1539,7 @@ const Measure = {
   circumference(region, tAlong = 0.5) {
     const bone = region === 'chest' ? null : Body.bones[region];
     let c, dir, regs;
-    if (region === 'chest') { const k = Body.k; c = new THREE.Vector3(0, 1.275 * k * (Body.isCustom ? 1 : 1) + (Body.isCustom ? 0 : Body.meta.hipY * ((Body.legL || 1) - 1) * k), 0); dir = new THREE.Vector3(0, 1, 0); regs = ['torso']; }
+    if (region === 'chest') { c = new THREE.Vector3(0, Body.lm ? Body.lm.chestY : Body.height * 0.72, 0); dir = new THREE.Vector3(0, 1, 0); regs = ['torso']; }
     else { if (!bone) return null; c = bone.a.clone().lerp(bone.b, tAlong); dir = new THREE.Vector3().subVectors(bone.b, bone.a).normalize(); regs = REGION_FAMILY[region] ? [region] : [region]; }
     const allowed = new Set(regs.map(r => Body.regionNames.indexOf(r)));
     const P = Body.geom.attributes.position.array, I = Body.index;
@@ -1479,11 +1616,11 @@ async function loadCustomModel(arrayBuffer, rotY = 0) {
 // Logique applicative : projets, tatouages, interactions
 // ============================================================================
 function zoneLabel(region, n, p) {
-  const k = Body.k || 1;
+  const k = Body.k || 1, lm = Body.lm || { ribY: 1.18 * k, waistY: 1.0 * k, pelvisY: 0.95 * k };
   if (region === 'torso') {
     const front = n.z >= -0.15;
-    if (front) return p.y > 1.18 * k ? 'Torse / poitrine' : (p.y > 0.98 * k ? 'Ventre' : 'Bassin');
-    return p.y > 1.06 * k ? 'Dos' : 'Bas du dos / fessier';
+    if (front) return p.y > lm.ribY - 0.02 * k ? 'Torse / poitrine' : (p.y > lm.pelvisY ? 'Ventre' : 'Bassin');
+    return p.y > lm.waistY ? 'Dos' : 'Bas du dos / fessier';
   }
   if (region === 'neck') return n.z < -0.3 ? 'Nuque' : 'Cou';
   return REGION_LABEL[region] || 'Corps';
@@ -1511,7 +1648,7 @@ const App = {
         await loadCustomModel(await blob.arrayBuffer(), cm.rotY || 0); return;
       } catch (e) { toast('Modèle personnalisé indisponible (' + e.message + '). Retour au mannequin.', 'err', 6000); S.project.avatar.customModel = null; }
     }
-    if (Body.isCustom && this.mannequin) { const m = this.mannequin; Body.setup(m.P, m.index.slice(), m.region, m.W, false); }
+    if (Body.isCustom) Body.restoreHuman();
   },
   applyAvatar(rebuild = true) {
     const av = S.project.avatar;
@@ -1945,28 +2082,31 @@ const UI = {
       this._defRaf = requestAnimationFrame(() => { Body.deform(av); clearTimeout(this._defT); this._defT = setTimeout(() => { Face.rebuild(); App.rebuildAll(); }, end ? 0 : 140); });
       if (end) Save.mark();
     };
-    if (Body.isCustom) b.append(h('div', { class: 'note' }, 'Modèle importé : seule la taille est ajustable (les curseurs de morphologie agissent uniquement sur le mannequin intégré).'));
-    else b.append(h('div', { class: 'note' }, 'Mannequin procédural intégré : un vrai maillage continu, volontairement simplifié (visage, mains et pieds stylisés). Il sert à placer et mesurer, pas à reproduire un corps exact.'));
+    if (Body.isCustom) b.append(h('div', { class: 'note' }, 'Modèle importé : seule la taille est ajustable (les curseurs de morphologie agissent uniquement sur le corps intégré).'));
+    else b.append(h('div', { class: 'note' }, 'Corps humain MakeHuman (CC0) : 214 000 triangles lissés, visage, mains et pieds détaillés, morphologies réelles. Il sert à placer et mesurer : ce n\u2019est pas un scan de votre corps.'));
     const pr = h('div', { class: 'sec' }, h('h4', {}, 'Silhouette'));
     const grid = h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '6px' } });
     for (const [k, v] of Object.entries(PRESETS)) grid.append(h('button', { class: 'btn sm' + (av.preset === k ? ' on' : ''), disabled: Body.isCustom, onclick: () => { History.record(); av.preset = k; av.params = { ...DEFAULT_PARAMS, ...v.p }; App.applyAvatar(true); Save.mark(); this.renderRight(); } }, v.label));
     pr.append(grid); b.append(pr);
     const sz = h('div', { class: 'sec' }, h('h4', {}, 'Taille et morphologie'));
     sz.append(this.slider('Taille', av.heightCm, 140, 210, 1, (v, end) => { History.record('height'); av.heightCm = v; applyDeform(end); }, { format: v => v + ' cm' }));
-    const sl = [['corpulence', 'Corpulence'], ['shoulders', 'Largeur des épaules'], ['chest', 'Torse (volume)'], ['waist', 'Taille affinée'], ['hips', 'Hanches'], ['breasts', 'Poitrine'], ['upperarm', 'Bras (épaisseur)'], ['forearm', 'Avant-bras'], ['thigh', 'Cuisses'], ['calf', 'Mollets'], ['legs', 'Longueur des jambes']];
+    const sl = [['gender', 'Féminin ← → Masculin'], ['corpulence', 'Poids / corpulence'], ['muscle', 'Musculature'], ['shoulders', 'Carrure (épaules en V)'], ['chest', 'Pectoraux'], ['breasts', 'Poitrine (silhouette féminine)'], ['waist', 'Taille affinée'], ['hips', 'Hanches'], ['upperarm', 'Bras (épaisseur)'], ['forearm', 'Avant-bras'], ['thigh', 'Cuisses'], ['calf', 'Mollets'], ['legs', 'Longueur des jambes']];
     for (const [k, l] of sl) {
-      const min = k === 'breasts' ? 0 : -1;
+      const min = -1;
       const s = this.slider(l, av.params[k], min, 1, 0.01, (v, end) => { History.record('p_' + k); av.params[k] = v; av.preset = 'perso'; applyDeform(end); }, { format: v => (v > 0 ? '+' : '') + Math.round(v * 100) });
       if (Body.isCustom) s.querySelector('input').disabled = true;
       sz.append(s);
     }
-    sz.append(h('div', { class: 'muted' }, 'Chaque curseur déforme réellement le maillage. Les motifs restent ancrés au même point de peau et leur projection est recalculée.'));
+    sz.append(h('div', { class: 'muted' }, 'Morphologies réelles issues de MakeHuman (sexe, poids, musculature, poitrine, membres). Les motifs restent ancrés au même point de peau et leur projection est recalculée.'));
     b.append(sz);
     const sk = h('div', { class: 'sec' }, h('h4', {}, 'Teinte de peau'));
     const sw = h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center' } });
     for (const c of SKIN_TONES) sw.append(h('button', { title: c, style: { width: '32px', height: '32px', borderRadius: '50%', background: c, border: av.skin === c ? '2px solid var(--acc)' : '2px solid var(--line2)' }, onclick: () => { History.record(); av.skin = c; Body.material.color.set(c); Engine.requestRender(); Save.mark(); this.renderRight(); } }));
     sw.append(h('input', { type: 'color', value: av.skin, oninput: (e) => { History.record('skin'); av.skin = e.target.value; Body.material.color.set(av.skin); Engine.requestRender(); }, onchange: () => Save.mark() }));
-    sk.append(sw); b.append(sk);
+    sk.append(sw);
+    if (!Body.isCustom) sk.append(h('div', { class: 'row', style: { marginTop: '10px' } }, h('label', {}, 'Couleur des yeux'),
+      ...['#5b3a24', '#3a2416', '#5d6b3a', '#3f6c8c', '#6b7a86'].map(c => h('button', { title: c, style: { width: '26px', height: '26px', borderRadius: '50%', background: c, border: (av.eyes || '#5b3a24') === c ? '2px solid var(--acc)' : '2px solid var(--line2)' }, onclick: () => { History.record(); av.eyes = c; Eyes.colorize(); Save.mark(); this.renderRight(); } }))));
+    b.append(sk);
     if (!Body.isCustom) {
       const hb = h('div', { class: 'sec' }, h('h4', {}, 'Cheveux et barbe (simplifiés)'));
       const hs = h('select', { class: 'inp', onchange: (e) => { History.record(); av.hair.style = e.target.value; Hair.rebuild(); Save.mark(); } },
@@ -1987,7 +2127,7 @@ const UI = {
       fc.append(this.slider('Rotation', f.rot || 0, -20, 20, 1, (v, end) => { History.record('fr'); f.rot = v; upd(end); }, { format: v => v + '°' }));
       fc.append(this.slider('Mélange avec la peau', Math.round(f.blend * 100), 20, 100, 1, (v, end) => { History.record('fb'); f.blend = v / 100; if (Face.mesh) { Face.mesh.material.opacity = f.blend; Engine.requestRender(); } if (end) Save.mark(); }, { format: v => v + ' %' }));
       fc.append(h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => FaceEditor.open() }, 'Changer / recadrer'), h('button', { class: 'btn sm danger', onclick: () => { History.record(); av.face = null; Face.rebuild(); Save.mark(); this.renderRight(); } }, 'Retirer la photo')));
-      fc.append(h('button', { class: 'btn sm ghost', onclick: () => Engine.flyTo(new THREE.Vector3(0, Body.height - 0.13 * Body.k, 0.05), new THREE.Vector3(0.1, Body.height - 0.12 * Body.k, 0.62)) }, 'Voir le visage'));
+      fc.append(h('button', { class: 'btn sm ghost', onclick: () => Engine.flyTo((Body.lm ? Body.lm.eyeMid.clone().setX(0) : new THREE.Vector3(0, Body.height - 0.13 * Body.k, 0.05)), (Body.lm ? Body.lm.eyeMid.clone().setX(0.1).setZ(0.62) : new THREE.Vector3(0.1, Body.height - 0.12 * Body.k, 0.62))) }, 'Voir le visage'));
     } else fc.append(h('button', { class: 'btn', onclick: () => FaceEditor.open() }, 'Importer une photo du visage'));
     b.append(fc);
     const md = h('div', { class: 'sec' }, h('h4', {}, 'Modèle 3D'));
@@ -2196,7 +2336,7 @@ const Editor = {
       const work = imageToCanvas(source, MAX_WORK_PX); const orig = imageToCanvas(work);
       const hadAlpha = canvasHasAlpha(work);
       E.work = work; E.orig = orig; E.tool = 'pan'; E.stack = undoStack(work.width * work.height * 4);
-      E.opts = { tol: 38, soft: 22, inner: false, size: 30, hard: 0.6, rot: 0, bg: null, dark: false, skin: null, skinTol: 26, skinSoft: 70, curve: 0 };
+      E.opts = { tol: 38, soft: 22, inner: false, size: 30, hard: 0.6, rot: 0, bg: null, dark: false, skin: null, skinTol: 22, skinSoft: 60, curve: 0, inkLight: true, inkGain: 1.15, inkSmooth: 1, inkClean: true, inkMono: false };
       E.name = name;
       const view = h('div', { class: 'ed-view' }); view.append(work); work.style.touchAction = 'none';
       const ov = h('div', { class: 'ov' }); view.append(ov);
@@ -2206,7 +2346,7 @@ const Editor = {
       const zv = E.zv = new ZoomView(view, work, { onTool: (ev, p, e) => E.onTool(ev, p, e) }); zv.tool = 'pan';
       zv.onChange = () => E.drawCrop();
       E.caseMsg = hadAlpha ? { cls: '', txt: 'Cas A — transparence détectée : elle est conservée telle quelle. Vous pouvez quand même recadrer ou retoucher.' }
-        : { cls: 'warn', txt: 'Fond opaque détecté. Fond blanc ou uni (cas B) : « Retirer le fond ». Photo sur la peau ou fond complexe (cas C) : utilisez les pinceaux Effacer / Restaurer.' };
+        : { cls: 'warn', txt: 'Fond opaque détecté. Fond blanc ou uni (cas B) : « Retirer le fond ». Photo de tatouage sur la peau (cas C) : section « Photo de tatouage sur la peau » plus bas (redresser, dérouler, extraire l\u2019encre), puis retouche au pinceau.' };
       if (big) E.caseMsg.txt += ' Image réduite à ' + work.width + '×' + work.height + ' px pour l’édition (l’original est conservé).';
       const body = h('div', { class: 'ed' }, side, view);
       const title = (editOf ? 'Retoucher « ' + name + ' »' : 'Importer un motif') + (queue ? ` (${queue.i}/${queue.n})` : '');
@@ -2253,10 +2393,17 @@ const Editor = {
     sk.append(UI.slider('2. Dérouler la courbure (bras/jambe)', o.curve, 0, 100, 1, (v) => o.curve = v, { format: v => v + ' %' }));
     sk.append(h('div', { class: 'row' }, h('button', { class: 'btn sm', onclick: () => o.curve ? E.op('Déroulage', () => E.unwrap(o.curve / 100)) : toast('Réglez d\u2019abord l\u2019intensité.') }, 'Appliquer le déroulage')));
     const skw = h('span', { style: { display: 'inline-block', width: '18px', height: '18px', borderRadius: '4px', border: '1px solid #666', verticalAlign: 'middle', background: o.skin ? `rgb(${o.skin.join(',')})` : 'transparent' } });
-    sk.append(h('div', { class: 'row', style: { marginTop: '6px' } }, h('span', { class: 'muted' }, '3. Peau : ', skw, o.skin ? ' (pipette)' : ' auto'), h('button', { class: 'btn sm', onclick: () => E.setTool('skinpick') }, 'Pipette peau')));
-    sk.append(UI.slider('Seuil peau / encre', o.skinTol, 2, 120, 1, (v) => o.skinTol = v));
-    sk.append(UI.slider('Douceur de l\u2019encre', o.skinSoft, 5, 160, 1, (v) => o.skinSoft = v));
-    sk.append(h('button', { class: 'btn primary', style: { width: '100%' }, onclick: () => E.op('Extraction', () => E.extractInk()) }, 'Extraire l\u2019encre'));
+    sk.append(h('div', { class: 'row', style: { marginTop: '6px' } }, h('span', { class: 'muted' }, '3. Peau de référence : ', skw, o.skin ? ' (pipette)' : ' auto'), h('button', { class: 'btn sm', onclick: () => E.setTool('skinpick') }, 'Pipette peau')));
+    const live = () => { if (E.inkBase) { clearTimeout(E._inkT); E._inkT = setTimeout(() => E.extractInk(true), 90); } };
+    sk.append(h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: o.inkLight, onchange: (e) => { o.inkLight = e.target.checked; live(); } }), 'Corriger l\u2019éclairage (ombres, courbure du membre)'));
+    sk.append(UI.slider('Seuil peau / encre', o.skinTol, 0, 120, 1, (v) => { o.skinTol = v; live(); }));
+    sk.append(UI.slider('Douceur des contours', o.skinSoft, 5, 160, 1, (v) => { o.skinSoft = v; live(); }));
+    sk.append(UI.slider('Intensité de l\u2019encre', Math.round(o.inkGain * 100), 60, 250, 1, (v) => { o.inkGain = v / 100; live(); }, { format: v => v + ' %' }));
+    sk.append(UI.slider('Lissage', o.inkSmooth, 0, 3, 1, (v) => { o.inkSmooth = v; live(); }, { format: v => v ? v + ' px' : 'aucun' }));
+    sk.append(h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: o.inkClean, onchange: (e) => { o.inkClean = e.target.checked; live(); } }), 'Supprimer les points isolés (grain de peau, pores)'));
+    sk.append(h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: o.inkMono, onchange: (e) => { o.inkMono = e.target.checked; live(); } }), 'Encre noire uniquement (retire les reflets colorés)'));
+    sk.append(h('button', { class: 'btn primary', style: { width: '100%' }, onclick: () => E.extractInk(false) }, E.inkBase ? 'Recalculer l\u2019extraction' : 'Extraire l\u2019encre'));
+    if (E.inkBase) sk.append(h('div', { class: 'muted', style: { marginTop: '6px' } }, 'Aperçu en direct : ajustez les réglages, le résultat se met à jour. Les autres outils valident l\u2019extraction.'));
     s.append(sk);
     const ed = h('div', { class: 'sec' }, h('h4', {}, 'Contours'), h('div', { class: 'row' },
       h('button', { class: 'btn sm', onclick: () => E.op('Nettoyage', () => E.despeckle()) }, 'Supprimer les miettes'),
@@ -2280,9 +2427,9 @@ const Editor = {
     this.renderSide(); this.drawCrop();
   },
   snapshot() { const g = ctx2d(this.work); return { work: g.getImageData(0, 0, this.work.width, this.work.height), orig: this.orig }; },
-  push() { const st = this.stack; st.list.push(this.snapshot()); if (st.list.length > st.max) st.list.shift(); st.redo.length = 0; },
+  push() { const st = this.stack; st.list.push(this.snapshot()); if (st.list.length > st.max) st.list.shift(); st.redo.length = 0; this.inkBase = null; },
   restoreSnap(sn) { this.work.width = sn.work.width; this.work.height = sn.work.height; ctx2d(this.work).putImageData(sn.work, 0, 0); this.orig = sn.orig; },
-  undo() { const st = this.stack; if (!st.list.length) return; st.redo.push(this.snapshot()); this.restoreSnap(st.list.pop()); this.zv.apply(); },
+  undo() { const st = this.stack; if (!st.list.length) return; st.redo.push(this.snapshot()); this.restoreSnap(st.list.pop()); this.inkBase = null; this.zv.apply(); this.renderSide(); },
   redoOp() { const st = this.stack; if (!st.redo.length) return; st.list.push(this.snapshot()); this.restoreSnap(st.redo.pop()); this.zv.apply(); },
   op(label, fn) { this.push(); try { fn(); } catch (e) { toast(label + ' : ' + e.message, 'err'); } },
   // ---- outils pointeur
@@ -2402,31 +2549,90 @@ const Editor = {
     const a = go(this.work), b = go(this.orig);
     this.work.width = W2; this.work.height = H; ctx2d(this.work).drawImage(a, 0, 0); this.orig = b; this.zv.fit();
   },
-  // ---- extraction de l'encre : alpha = écart à la couleur de peau (assombrissement + teinte), couleur « démélangée »
-  extractInk() {
-    const o = this.opts; const g = ctx2d(this.work); const W = this.work.width, H = this.work.height; const img = g.getImageData(0, 0, W, H); const d = img.data;
-    const lumOf = (r, gg, b) => 0.299 * r + 0.587 * gg + 0.114 * b;
+  // ---- extraction de l'encre (v2)
+  // Modèle « transmissif » : l'encre filtre la lumière renvoyée par la peau → pixel = peau × T.
+  // La peau de référence est estimée localement (grille lissée) pour neutraliser ombres et courbure.
+  extractInk(liveRun) {
+    const E = this, o = E.opts;
+    if (!E.inkBase) { E.push(); E.inkBase = ctx2d(E.work).getImageData(0, 0, E.work.width, E.work.height); E.renderSide(); }
+    const src = E.inkBase, W = src.width, H = src.height, sd = src.data;
+    const out = new ImageData(new Uint8ClampedArray(sd), W, H), d = out.data;
+    const lumOf = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
+    // peau globale : pipette, ou médiane des pixels clairs
     let skin = o.skin;
     if (!skin) {
-      const px = []; for (let i = 0; i < d.length; i += 16) if (d[i + 3] > 200) px.push([d[i], d[i + 1], d[i + 2], lumOf(d[i], d[i + 1], d[i + 2])]);
-      if (px.length < 20) throw new Error('image vide');
+      const px = []; for (let i = 0; i < sd.length; i += 16) if (sd[i + 3] > 200) px.push([sd[i], sd[i + 1], sd[i + 2], lumOf(sd[i], sd[i + 1], sd[i + 2])]);
+      if (px.length < 20) return toast('Image vide.', 'err');
       px.sort((a, b) => a[3] - b[3]); const light = px.slice(Math.floor(px.length * 0.45));
       const med = (k) => light.map(p => p[k]).sort((a, b) => a - b)[light.length >> 1]; skin = [med(0), med(1), med(2)];
     }
-    const lS = lumOf(...skin); let kept = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      if (!d[i + 3]) continue;
-      const r = d[i], gg = d[i + 1], b = d[i + 2], l = lumOf(r, gg, b);
-      const dark = Math.max(0, lS - l); const sh = lS - l; // compare la teinte à luminosité égale
-      const cr = Math.hypot(r + sh - skin[0], gg + sh - skin[1], b + sh - skin[2]);
-      const dist = Math.sqrt(dark * dark + 0.7 * cr * cr);
-      const a = clamp((dist - o.skinTol) / o.skinSoft, 0, 1);
-      if (a <= 0.01) { d[i + 3] = 0; continue; }
-      for (let c = 0; c < 3; c++) d[i + c] = clamp((d[i + c] - skin[c] * (1 - a)) / a, 0, 255);
-      d[i + 3] = Math.round(d[i + 3] * a); kept++;
+    // carte locale de la peau (cellules de ~24 px), trous comblés par diffusion puis interpolation bilinéaire
+    const cs = Math.max(12, Math.round(Math.max(W, H) / 40)), gw = Math.ceil(W / cs), gh = Math.ceil(H / cs);
+    const cell = new Float32Array(gw * gh * 3), ok = new Uint8Array(gw * gh);
+    if (o.inkLight) {
+      const lS = lumOf(...skin);
+      for (let cy = 0; cy < gh; cy++) for (let cx = 0; cx < gw; cx++) {
+        const vals = [];
+        for (let y = cy * cs; y < Math.min(H, (cy + 1) * cs); y += 2) for (let x = cx * cs; x < Math.min(W, (cx + 1) * cs); x += 2) {
+          const i = (y * W + x) * 4; if (sd[i + 3] < 200) continue; const l = lumOf(sd[i], sd[i + 1], sd[i + 2]);
+          // pixel « de peau » : même teinte que la peau (à luminosité égale), pas trop sombre
+          const sh = lS - l; const cr = Math.hypot(sd[i] + sh - skin[0], sd[i + 1] + sh - skin[1], sd[i + 2] + sh - skin[2]);
+          if (cr < 38 && l > lS * 0.45) vals.push([l, sd[i], sd[i + 1], sd[i + 2]]);
+        }
+        if (vals.length >= 6) { vals.sort((a, b) => b[0] - a[0]); const top = vals.slice(0, Math.max(3, Math.round(vals.length * 0.6))); const c = [0, 0, 0]; for (const v of top) { c[0] += v[1]; c[1] += v[2]; c[2] += v[3]; } const k = (cy * gw + cx) * 3; cell[k] = c[0] / top.length; cell[k + 1] = c[1] / top.length; cell[k + 2] = c[2] / top.length; ok[cy * gw + cx] = 1; }
+      }
+      // diffusion pour combler les cellules entièrement couvertes d'encre
+      let missing = ok.reduce((s, v) => s + (v ? 0 : 1), 0), guard = 0;
+      while (missing && guard++ < 200) {
+        const nok = ok.slice(); missing = 0;
+        for (let cy = 0; cy < gh; cy++) for (let cx = 0; cx < gw; cx++) {
+          const c = cy * gw + cx; if (ok[c]) continue; let n = 0; const acc = [0, 0, 0];
+          for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const x = cx + dx, y = cy + dy; if (x < 0 || y < 0 || x >= gw || y >= gh || !ok[y * gw + x]) continue; for (let a = 0; a < 3; a++) acc[a] += cell[(y * gw + x) * 3 + a]; n++; }
+          if (n) { for (let a = 0; a < 3; a++) cell[c * 3 + a] = acc[a] / n; nok[c] = 1; } else missing++;
+        }
+        ok.set(nok); if (guard > 2 && !ok.some(v => v)) break;
+      }
+      if (!ok.some(v => v)) for (let c = 0; c < gw * gh; c++) { cell[c * 3] = skin[0]; cell[c * 3 + 1] = skin[1]; cell[c * 3 + 2] = skin[2]; }
+      // léger flou de la grille (la peau varie lentement)
+      for (let it = 0; it < 2; it++) { const t = cell.slice(); for (let cy = 0; cy < gh; cy++) for (let cx = 0; cx < gw; cx++) for (let a = 0; a < 3; a++) { let s2 = 0, n = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const x = cx + dx, y = cy + dy; if (x < 0 || y < 0 || x >= gw || y >= gh) continue; s2 += t[(y * gw + x) * 3 + a]; n++; } cell[(cy * gw + cx) * 3 + a] = s2 / n; } }
+    } else for (let c = 0; c < gw * gh; c++) { cell[c * 3] = skin[0]; cell[c * 3 + 1] = skin[1]; cell[c * 3 + 2] = skin[2]; }
+    const thr = o.skinTol / 255, soft = Math.max(0.02, o.skinSoft / 255), gain = o.inkGain;
+    const A = new Float32Array(W * H);
+    for (let y = 0; y < H; y++) {
+      const fy = clamp((y + 0.5) / cs - 0.5, 0, gh - 1), y0 = Math.floor(fy), y1 = Math.min(gh - 1, y0 + 1), ty = fy - y0;
+      for (let x = 0; x < W; x++) {
+        const p = y * W + x, i = p * 4; if (!sd[i + 3]) { A[p] = 0; continue; }
+        const fx = clamp((x + 0.5) / cs - 0.5, 0, gw - 1), x0 = Math.floor(fx), x1 = Math.min(gw - 1, x0 + 1), tx = fx - x0;
+        const T = [0, 0, 0];
+        for (let a = 0; a < 3; a++) {
+          const sk = (cell[(y0 * gw + x0) * 3 + a] * (1 - tx) + cell[(y0 * gw + x1) * 3 + a] * tx) * (1 - ty) + (cell[(y1 * gw + x0) * 3 + a] * (1 - tx) + cell[(y1 * gw + x1) * 3 + a] * tx) * ty;
+          T[a] = clamp(sd[i + a] / Math.max(8, sk), 0, 1.25);
+        }
+        const mean = (T[0] + T[1] + T[2]) / 3, mn = Math.min(T[0], T[1], T[2]);
+        const a0 = 1 - (0.6 * mean + 0.4 * mn);                         // densité d'encre estimée
+        const t = clamp((a0 - thr) / soft, 0, 1); let al = t * t * (3 - 2 * t) * Math.min(1, a0 * gain + 0.15);
+        al = Math.min(1, al * gain);
+        A[p] = al * (sd[i + 3] / 255);
+        if (al > 0.01) {
+          for (let a = 0; a < 3; a++) d[i + a] = clamp((Math.min(1, T[a]) - (1 - al)) / al, 0, 1) * 255;
+          if (o.inkMono) { const l = lumOf(d[i], d[i + 1], d[i + 2]); d[i] = d[i + 1] = d[i + 2] = l; }
+        }
+      }
     }
-    g.putImageData(img, 0, 0);
-    toast('Encre extraite (' + Math.round(kept / (W * H) * 100) + ' % des pixels conservés). Ajustez le seuil si la peau reste visible.', 'ok', 5000);
+    // lissage de l'alpha (bord des traits) et suppression des points isolés
+    if (o.inkSmooth) { for (let it = 0; it < o.inkSmooth; it++) { const t = A.slice(); for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const p = y * W + x; A[p] = (t[p] * 4 + t[p - 1] + t[p + 1] + t[p - W] + t[p + W]) / 8; } } }
+    if (o.inkClean) {
+      const N = W * H, lab = new Int32Array(N).fill(-1), st = new Int32Array(N); const minArea = Math.max(6, N * 0.00002);
+      for (let p0 = 0; p0 < N; p0++) {
+        if (lab[p0] >= 0 || A[p0] < 0.25) continue; let sp = 0; st[sp++] = p0; lab[p0] = p0; const comp = [];
+        while (sp) { const q = st[--sp]; comp.push(q); const x = q % W, y = (q / W) | 0; for (const r of [x > 0 ? q - 1 : -1, x < W - 1 ? q + 1 : -1, y > 0 ? q - W : -1, y < H - 1 ? q + W : -1]) if (r >= 0 && lab[r] < 0 && A[r] >= 0.25) { lab[r] = p0; st[sp++] = r; } }
+        if (comp.length < minArea) for (const q of comp) A[q] = 0;
+      }
+      for (let p = 0; p < N; p++) if (A[p] < 0.25 && lab[p] < 0) A[p] *= 0.4; // voile résiduel atténué
+    }
+    let kept = 0; for (let p = 0; p < W * H; p++) { d[p * 4 + 3] = Math.round(A[p] * 255); if (A[p] > 0.5) kept++; }
+    ctx2d(E.work).putImageData(out, 0, 0);
+    if (!liveRun) toast('Encre extraite (' + Math.round(kept / (W * H) * 100) + ' % de l’image). Ajustez les réglages : l’aperçu se met à jour en direct.', 'ok', 5000);
   },
   // ---- détourage d'un fond uni : remplissage depuis les bords, contours adoucis, couleurs « démélangées »
   removeBg() {
@@ -2795,7 +3001,7 @@ const FaceEditor = {
       S.project.avatar.face = { imageId, srcId, pins: this.pins, scale: old.scale || 1, dx: old.dx || 0, dy: old.dy || 0, rot: old.rot || 0, blend: old.blend || 0.85 };
       Decals.textures.forEach((t, k) => { if (old.imageId && k.startsWith(old.imageId)) { t.dispose(); Decals.textures.delete(k); } });
       await Face.rebuild(); Save.mark(); UI.setRTab('avatar'); close();
-      Engine.flyTo(new THREE.Vector3(0, Body.height - 0.13 * Body.k, 0.05), new THREE.Vector3(0.12, Body.height - 0.12 * Body.k, 0.62));
+      Engine.flyTo((Body.lm ? Body.lm.eyeMid.clone().setX(0) : new THREE.Vector3(0, Body.height - 0.13 * Body.k, 0.05)), (Body.lm ? Body.lm.eyeMid.clone().setX(0.12).setZ(0.62) : new THREE.Vector3(0.12, Body.height - 0.12 * Body.k, 0.62)));
     } catch (e) { toast(storageErrorMessage(e), 'err'); } finally { busy.close(); }
   },
 };
@@ -3210,7 +3416,7 @@ const AI = {
 function showGuide() {
   const step = (n, t, p) => h('div', { class: 'guide-step' }, h('div', { class: 'n' }, n), h('div', {}, h('b', {}, t), h('p', {}, p)));
   openModal({ title: 'Bienvenue dans InkBody', body: h('div', {},
-    step(1, 'Personnalisez votre corps', 'Onglet « Avatar » : silhouette, taille en cm, corpulence, peau, et si vous le souhaitez une photo de visage (approximative).'),
+    step(1, 'Personnalisez votre corps', 'Onglet « Avatar » : homme/femme, taille en cm, poids, musculature, peau, yeux, et si vous le souhaitez une photo de visage (approximative).'),
     step(2, 'Importez un motif', '« Motifs » → « Importer ». Fond blanc ? « Retirer le fond ». Photo sur la peau ? Détourez au pinceau. Vous pouvez aussi essayer les exemples.'),
     step(3, 'Placez-le sur la peau', 'Sélectionnez le motif, « Placer sur le corps », puis touchez l’avatar. Réglez taille et rotation, et utilisez « Déplacer » pour le faire glisser.'),
     h('div', { class: 'note' }, 'Tout reste sur votre appareil, et l\u2019application fonctionne hors ligne après ce premier chargement. Vous pouvez l\u2019ajouter à l\u2019écran d\u2019accueil. Les mesures sont estimatives : à confirmer avec votre tatoueur.'),
@@ -3280,8 +3486,7 @@ async function boot() {
   catch (e) { fail('WebGL indisponible', 'InkBody a besoin de WebGL pour afficher le corps en 3D. Activez l’accélération matérielle, mettez à jour votre navigateur, ou essayez Chrome, Firefox ou Safari récent.'); return; }
   Measure.init(); Interact.init(); wireUI();
   try {
-    await Body.loadMannequin((p) => { $('#loadBar').style.width = Math.round(p * 100) + '%'; });
-    App.mannequin = { P: Body.P0, index: Body.index.slice(), region: Body.REG, W: Body.W };
+    await Body.loadHuman((p) => { $('#loadBar').style.width = Math.round(p * 100) + '%'; });
   } catch (e) { fail('Corps 3D indisponible', 'Le modèle n’a pas pu être chargé (' + e.message + '). Vérifiez que le dossier assets/ est bien publié avec index.html.'); return; }
   try { await DB.open(); }
   catch (e) { memoryDB(); toast('Stockage local indisponible (navigation privée ?) : vos projets ne seront pas conservés après fermeture. Pensez à exporter.', 'err', 9000); }
