@@ -5,7 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#141416">
 <meta name="description" content="InkBody — préparez vos projets de tatouage sur un avatar 3D, en local dans votre navigateur.">
-<script>if(!Object.hasOwn)Object.hasOwn=function(o,k){return Object.prototype.hasOwnProperty.call(o,k)};</script>
+<script>
+// auto-réparation : si un ancien cache sert des fichiers incompatibles, on le vide et on recharge une fois
+addEventListener('error',function(e){var m=(e&&e.message)||'';if(/module specifier|Importing a module|import/i.test(m)&&!sessionStorage.getItem('ibFix')){sessionStorage.setItem('ibFix','1');var go=function(){location.reload()};try{Promise.all([window.caches?caches.keys().then(function(k){return Promise.all(k.map(function(x){return caches.delete(x)}))}):0,navigator.serviceWorker?navigator.serviceWorker.getRegistrations().then(function(r){return Promise.all(r.map(function(x){return x.unregister()}))}):0]).then(go,go)}catch(_){go()}}},true);
+setTimeout(function(){if(window.InkBody)return;var l=document.getElementById('loader');if(!l)return;var d=document.createElement('div');d.style.cssText='max-width:420px;text-align:center;padding:0 20px';d.innerHTML='Le chargement est anormalement long. <br><button class="btn primary" style="margin-top:10px">Vider le cache et recharger</button>';d.querySelector('button').onclick=function(){sessionStorage.removeItem('ibFix');var go=function(){location.reload()};Promise.all([window.caches?caches.keys().then(function(k){return Promise.all(k.map(function(x){return caches.delete(x)}))}):0,navigator.serviceWorker?navigator.serviceWorker.getRegistrations().then(function(r){return Promise.all(r.map(function(x){return x.unregister()}))}):0]).then(go,go)};l.appendChild(d)},30000);
+if(!Object.hasOwn)Object.hasOwn=function(o,k){return Object.prototype.hasOwnProperty.call(o,k)};</script>
 <title>InkBody — préparation de projets de tatouage</title>
 <link rel="icon" href="assets/icons/icon.svg" type="image/svg+xml">
 <link rel="manifest" href="manifest.webmanifest">
@@ -330,7 +334,7 @@ import { mergeVertices } from './assets/vendor/addons/BufferGeometryUtils.js';
 import { MeshBVH, acceleratedRaycast } from './assets/vendor/three-mesh-bvh.module.js';
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.1.1';
 const PROJECT_FORMAT = 'inkbody-project';
 const PROJECT_VERSION = 1;
 const EXPORT_FORMAT = 'inkbody-export';
@@ -3296,6 +3300,7 @@ async function boot() {
   }
   if (!localStorage.getItem('inkbody.guide')) showGuide();
   setTimeout(gcImages, 5000);
+  try { sessionStorage.removeItem('ibFix'); } catch (e) { /* */ }
   window.InkBody = { S, App, Body, Engine, Decals, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
 }
 boot();
