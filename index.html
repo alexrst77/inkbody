@@ -1460,8 +1460,10 @@ const Decals = {
   // chaîne d'axes d'un membre (épaule → coude → poignet → main, hanche → genou → cheville → orteils)
   limbChain(region) {
     const B = Body.bones; if (!B) return null; const side = region.slice(-1);
-    if (/^(upperarm|forearm)_/.test(region)) return { chain: [B['upperarm_' + side].a, B['upperarm_' + side].b, B['forearm_' + side].b, B['hand_' + side].b], regions: ['upperarm_' + side, 'forearm_' + side, 'hand_' + side] };
-    if (/^(thigh|calf)_/.test(region)) return { chain: [B['thigh_' + side].a, B['thigh_' + side].b, B['calf_' + side].b, B['foot_' + side].b], regions: ['thigh_' + side, 'calf_' + side, 'foot_' + side] };
+    // l'axe est prolongé au-delà de l'épaule / de la hanche : une manchette peut monter sur le moignon de l'épaule
+    const up = (bn, d) => bn.a.clone().addScaledVector(new THREE.Vector3().subVectors(bn.a, bn.b).normalize(), d * (Body.k || 1));
+    if (/^(upperarm|forearm)_/.test(region)) { const u = B['upperarm_' + side]; return { chain: [up(u, 0.09), u.a, u.b, B['forearm_' + side].b, B['hand_' + side].b], regions: ['upperarm_' + side, 'forearm_' + side, 'hand_' + side], cap: 'torso', capR: ((Body.regionInfo['upperarm_' + side] || {}).r || 0.05) * 1.9 }; }
+    if (/^(thigh|calf)_/.test(region)) { const u = B['thigh_' + side]; return { chain: [up(u, 0.05), u.a, u.b, B['calf_' + side].b, B['foot_' + side].b], regions: ['thigh_' + side, 'calf_' + side, 'foot_' + side], cap: null }; }
     return null;
   },
   /**
@@ -1489,13 +1491,17 @@ const Decals = {
     const raw = (v) => { const pr = proj(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]); const a = e1[pr.i], b = e2[pr.i]; return [Math.atan2(pr.rx * b.x + pr.ry * b.y + pr.rz * b.z, pr.rx * a.x + pr.ry * a.y + pr.rz * a.z), -(segs[pr.i].cum + pr.t - T0)]; };
     const toUV = (phi, tt) => { const s0 = phi * R0; const s = s0 * cr + tt * sr, t2 = -s0 * sr + tt * cr; return [s / w + 0.5, t2 / h + 0.5]; };
     const allowed = new Set(opt.regions.map(r => Body.regionNames.indexOf(r)));
+    const capReg = opt.cap ? Body.regionNames.indexOf(opt.cap) : -2, capR2 = (opt.capR || 0) ** 2;
+    const capOk = (f) => { // face du torse proche de l'axe prolongé (moignon de l'épaule) : acceptée
+      let x = 0, y = 0, z = 0; for (let k2 = 0; k2 < 3; k2++) { const v = I[f * 3 + k2]; x += P[v * 3] / 3; y += P[v * 3 + 1] / 3; z += P[v * 3 + 2] / 3; }
+      const pr = proj(x, y, z); return pr.i <= 1 && pr.rx * pr.rx + pr.ry * pr.ry + pr.rz * pr.rz < capR2; };
     const gen = ++Body.gen; const stamp = Body.stamp; const cache = new Map();
     const R = (v) => { let r = cache.get(v); if (!r) { r = raw(v); cache.set(v, r); } return r; };
     const pos = [], uv = [], nor = []; const queue = [startFace]; stamp[startFace] = gen; const margin = 0.02;
     const inside = (q) => q[0] > -margin && q[0] < 1 + margin && q[1] > -margin && q[1] < 1 + margin;
     let overlap = false;
     while (queue.length) {
-      const f = queue.pop(); if (!allowed.has(Body.faceRegion[f]) && f !== startFace) continue;
+      const f = queue.pop(); if (!allowed.has(Body.faceRegion[f]) && f !== startFace && !(Body.faceRegion[f] === capReg && capOk(f))) continue;
       const vs = [I[f * 3], I[f * 3 + 1], I[f * 3 + 2]]; const rs = vs.map(R);
       // continuité angulaire dans la face (couture à ±π)
       const ph = rs.map(r => r[0]); let seam = false;
@@ -1569,9 +1575,9 @@ const Decals = {
       const extAround = (Math.abs(w * Math.cos(ra)) + Math.abs(h * Math.sin(ra)));         // étendue autour du membre
       const big = extAround > 2 * Math.PI * R * 0.42 || extAlong > 0.09;                   // manchette / bande / pièce longue
       // seules les pièces qui débordent nettement au-dessus de l'épaule / de la hanche restent épousées sur le torse
-      if (!big || along - extAlong < -0.05) limb = null;
+      if (!big || along - extAlong < -0.2) limb = null; // pièce surtout posée sur l'épaule/le torse : carte géodésique
     }
-    if (limb) { opt.mode = 'sweep'; opt.chain = limb.chain; opt.regions = limb.regions; }
+    if (limb) { opt.mode = 'sweep'; opt.chain = limb.chain; opt.regions = limb.regions; opt.cap = limb.cap; opt.capR = limb.capR; }
     const geo = opt.mode === 'sweep' ? this.buildSweepPatch(opt) : opt.mode === 'surface' ? this.buildSurfacePatch(opt) : this.buildPatch(opt);
     this.warnings.set(t.id, this.warningFor(t, opt, geo));
     if (!geo) return;
