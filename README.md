@@ -20,7 +20,7 @@ Pour tester en local, il faut un petit serveur HTTP (les modules JavaScript ne s
 
 ## Contenu
 - `index.html` : l'application (HTML, CSS et JavaScript intégrés).
-- `assets/vendor/` : three.js r170 et three-mesh-bvh 0.8.3, embarqués et figés (aucun CDN).
+- `assets/lib/` : three.js r170 et three-mesh-bvh 0.8.3, embarqués et figés (aucun CDN).
 - `assets/models/` : le mannequin 3D (275 000 triangles, zones et poids de déformation), compressé `.gz` avec version brute de secours. Régénérable avec `node tools/build-mannequin.mjs`.
 - `sw.js`, `manifest.webmanifest` : mode hors ligne et installation.
 - `assets/samples/` : 3 motifs d'exemple (SVG).

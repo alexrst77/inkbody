@@ -327,14 +327,14 @@ table.lst tr.cur td{background:var(--accbg)}
 // InkBody — application de préparation de projets de tatouage (100 % locale)
 // Dépendances embarquées : three.js r170, three-mesh-bvh 0.8.3 (MIT)
 // ============================================================================
-import * as THREE from './assets/vendor/three.module.min.js';
-import { OrbitControls } from './assets/vendor/addons/OrbitControls.js';
-import { GLTFLoader } from './assets/vendor/addons/GLTFLoader.js';
-import { mergeVertices } from './assets/vendor/addons/BufferGeometryUtils.js';
-import { MeshBVH, acceleratedRaycast } from './assets/vendor/three-mesh-bvh.module.js';
+import * as THREE from './assets/lib/three.module.min.js';
+import { OrbitControls } from './assets/lib/addons/OrbitControls.js';
+import { GLTFLoader } from './assets/lib/addons/GLTFLoader.js';
+import { mergeVertices } from './assets/lib/addons/BufferGeometryUtils.js';
+import { MeshBVH, acceleratedRaycast } from './assets/lib/three-mesh-bvh.module.js';
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
-const APP_VERSION = '2.1.1';
+const APP_VERSION = '2.1.2';
 const PROJECT_FORMAT = 'inkbody-project';
 const PROJECT_VERSION = 1;
 const EXPORT_FORMAT = 'inkbody-export';

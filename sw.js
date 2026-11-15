@@ -1,10 +1,10 @@
 // InkBody — service worker : rend l'application utilisable hors ligne après un premier chargement complet.
 // Pensez à changer VERSION à chaque mise à jour du site pour renouveler le cache.
-const VERSION = 'inkbody-2.1.1';
+const VERSION = 'inkbody-2.1.2';
 const CORE = [
   './', './index.html', './manifest.webmanifest',
-  './assets/vendor/three.module.min.js', './assets/vendor/three-mesh-bvh.module.js',
-  './assets/vendor/addons/OrbitControls.js', './assets/vendor/addons/GLTFLoader.js', './assets/vendor/addons/BufferGeometryUtils.js',
+  './assets/lib/three.module.min.js', './assets/lib/three-mesh-bvh.module.js',
+  './assets/lib/addons/OrbitControls.js', './assets/lib/addons/GLTFLoader.js', './assets/lib/addons/BufferGeometryUtils.js',
   './assets/models/mannequin.json', './assets/models/mannequin.bin.gz',
   './assets/samples/mandala.svg', './assets/samples/hirondelle.svg', './assets/samples/rose-lignes.svg',
   './assets/icons/icon.svg', './assets/icons/icon-180.png', './assets/icons/icon-192.png', './assets/icons/icon-512.png',

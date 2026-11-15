@@ -25,8 +25,10 @@ http.createServer((req, res) => {
       'Content-Type': TYPES[ext] || 'application/octet-stream',
       'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-      'Cache-Control': (ext === '.html' || p.endsWith('/sw.js') || ext === '.webmanifest') ? 'no-cache' : 'public, max-age=3600',
+      // revalidation systématique : une mise à jour n'est jamais masquée par un ancien cache
+      'Cache-Control': 'no-cache', 'Last-Modified': st.mtime.toUTCString(), 'ETag': 'W/"' + st.size.toString(16) + '-' + Math.floor(st.mtimeMs).toString(16) + '"',
     };
+    if (req.headers['if-none-match'] === headers.ETag) { res.writeHead(304, { ETag: headers.ETag, 'Cache-Control': 'no-cache' }); res.end(); return; }
     const compressible = /^(text\/|application\/(json|manifest)|image\/svg)/.test(headers['Content-Type']);
     if (compressible && /\bgzip\b/.test(req.headers['accept-encoding'] || '')) { headers['Content-Encoding'] = 'gzip'; headers['Vary'] = 'Accept-Encoding'; res.writeHead(200, headers); if (req.method === 'HEAD') return res.end(); fs.createReadStream(file).pipe(zlib.createGzip()).pipe(res); return; }
     headers['Content-Length'] = st.size; res.writeHead(200, headers);
