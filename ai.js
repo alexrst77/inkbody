@@ -5,7 +5,7 @@
 
 const MAX_BODY = 14 * 1024 * 1024;
 const MAX_IMAGE = 4 * 1024 * 1024;
-const MODES = new Set(['motif', 'manchette', 'ajouts', 'liaison', 'composition']);
+const MODES = new Set(['motif', 'manchette', 'ajouts', 'photo', 'liaison', 'composition']);
 const day = () => new Date().toISOString().slice(0, 10);
 const counters = new Map(); // compteurs en mémoire (remis à zéro chaque jour / au redémarrage)
 const hits = new Map();     // anti-rafale : horodatages récents par IP
@@ -66,13 +66,14 @@ function quota(ip, c) {
   return '';
 }
 
-function instructions(mode, style, prompt, side, hasRefs) {
+function instructions(mode, style, prompt, side, hasRefs, gender) {
   const st = style || 'black and grey';
   const base = {
     motif: `Tattoo flash design, ${st} style. ${prompt}. One standalone artwork, black and grey ink only unless colours are requested, on a fully transparent background, crisp clean linework and shading, no skin, no body, no hands, no mockup, no text unless requested, no frame, no border.`,
     manchette: `Full arm sleeve tattoo design laid out as a single tall vertical stencil sheet (unrolled sleeve): the top of the image is the shoulder, the bottom is the wrist, ${side === 'l' ? 'left' : 'right'} arm. ${st} style. Theme: ${prompt}. Elements flow continuously from top to bottom with filler (ornamental scrolls, leaves, dotwork shading) so it reads as one cohesive sleeve, densest in the middle, tapering at the wrist. Black and grey ink only unless colours are requested, fully transparent background, no skin, no arm, no body, no mockup, no text, no frame.`,
     liaison: `This is a render of a 3D avatar with tattoos. Only paint inside the transparent area of the mask, on bare skin between the existing tattoos. Add ${st} tattoo connecting elements that link the existing designs: ${prompt || 'subtle ornamental links'}. Do not modify existing tattoos, the body shape, lighting or background.`,
     ajouts: `The image is an UNROLLED tattoo stencil sheet of a ${side === 'l' ? 'left' : 'right'} arm on white paper: top edge = shoulder, bottom = hand, the dashed lines mark the elbow and the wrist, the vertical centre line is the outer arm and the left/right edges are the inner arm (they meet). LIGHT BLUE areas are skin already occupied by the client's existing tattoos: never draw on light blue, leave it exactly as it is. Draw NEW tattoo artwork only on the white paper, in ${st} style, black and grey ink: ${prompt}. Fill the white areas generously and make the new elements wrap around and hug the edges of the blue areas so everything reads as one cohesive sleeve; large lush leaves rather than thin sparse twigs unless asked; progressive shading. No skin, no body, no text, no frame; keep the white paper.`,
+    photo: `Turn this 3D avatar render into a photorealistic studio photograph of a real adult ${gender === 'f' ? 'woman' : 'man'} with exactly the same pose, camera angle, framing, body shape and proportions. Keep EXACTLY the same tattoos, at the same places, with the same designs and the same black and grey ink: do not add, remove, move or redesign any tattoo, and do not add tattoos on bare skin. Natural skin texture and pores, soft studio lighting, neutral dark grey backdrop. The person wears plain dark ${gender === 'f' ? 'sports bra and briefs' : 'boxer briefs'}. ${prompt}`,
     composition: `This is a render of a 3D avatar with tattoos. Only paint inside the transparent area of the mask, on bare skin. Suggest a ${st} tattoo composition for this free area: ${prompt || 'harmonious with the existing tattoos'}. Do not modify existing tattoos, the body shape, lighting or background.`,
   }[mode];
   return base + (hasRefs ? ' Match the drawing style of the reference tattoo images provided and reuse their motifs where it fits.' : '');
@@ -89,20 +90,22 @@ async function generate(req, res) {
   const prompt = String(body.prompt || '').slice(0, 1000).trim();
   const style = String(body.style || '').slice(0, 60).replace(/[^\p{L}\p{N} '\-]/gu, '');
   const side = body.side === 'l' ? 'l' : 'r';
-  const n = Math.min(2, Math.max(1, Number(body.n) || 1));
+  let n = Math.min(2, Math.max(1, Number(body.n) || 1));
   let refs, zone = null, mask = null;
   try {
     refs = (Array.isArray(body.references) ? body.references : []).slice(0, 3).map(decodeImage);
-    if (mode === 'liaison' || mode === 'composition' || mode === 'ajouts') {
-      zone = decodeImage(body.zoneImage); mask = decodeImage(body.mask);
-      if (mask.type !== 'image/png') throw new Error('Le masque doit être un PNG');
+    if (mode === 'liaison' || mode === 'composition' || mode === 'ajouts' || mode === 'photo') {
+      zone = decodeImage(body.zoneImage); mask = mode === 'photo' ? null : decodeImage(body.mask);
+      if (mask && mask.type !== 'image/png') throw new Error('Le masque doit être un PNG');
     }
   } catch (e) { return send(res, 400, { error: e.message }); }
   if ((mode === 'motif' || mode === 'manchette') && !prompt) return send(res, 400, { error: 'Description manquante' });
+  if (mode === 'photo') n = 1;
   const q = quota(clientIp(req), c); if (q) return send(res, 429, { error: q });
 
-  const instr = instructions(mode, style, prompt, side, refs.length > 0);
-  const size = mode === 'manchette' || mode === 'ajouts' ? '1024x1536' : '1024x1024';
+  const gender = body.gender === 'f' ? 'f' : 'm';
+  const instr = instructions(mode, style, prompt, side, refs.length > 0, gender);
+  const size = mode === 'photo' ? (['1024x1536', '1536x1024', '1024x1024'].includes(body.size) ? body.size : '1024x1536') : mode === 'manchette' || mode === 'ajouts' ? '1024x1536' : '1024x1024';
   const wantsAlpha = mode === 'motif' || mode === 'manchette';
   const call = async (model, alpha) => {
     if ((mode === 'motif' || mode === 'manchette') && !refs.length) {

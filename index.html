@@ -335,6 +335,7 @@ import * as THREE from './assets/lib/three.module.min.js';
 import { OrbitControls } from './assets/lib/addons/OrbitControls.js';
 import { GLTFLoader } from './assets/lib/addons/GLTFLoader.js';
 import { mergeVertices } from './assets/lib/addons/BufferGeometryUtils.js';
+import { RoomEnvironment } from './assets/lib/addons/RoomEnvironment.js';
 import { MeshBVH, acceleratedRaycast } from './assets/lib/three-mesh-bvh.module.js';
 THREE.Mesh.prototype.raycast = acceleratedRaycast;
 
@@ -643,7 +644,7 @@ const Engine = {
     this.renderer = renderer;
     renderer.setPixelRatio(Math.min(devicePixelRatio || 1, isMobile() ? 1.75 : 2));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.NeutralToneMapping; renderer.toneMappingExposure = 1.05;
+    renderer.toneMapping = THREE.NeutralToneMapping; renderer.toneMappingExposure = 0.98;
     const scene = this.scene = new THREE.Scene();
     scene.background = new THREE.Color(0x1d1d21);
     this.camera = new THREE.PerspectiveCamera(32, 1, 0.02, 30);
@@ -653,8 +654,10 @@ const Engine = {
     c.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
     c.addEventListener('change', () => this.requestRender());
     // éclairage neutre de studio
-    scene.add(new THREE.HemisphereLight(0xf4f2ef, 0x3a3a40, 1.15));
-    const key = new THREE.DirectionalLight(0xffffff, 1.55); key.position.set(1.6, 2.6, 2.4); scene.add(key);
+    // éclairage d'ambiance réaliste (environnement de studio) + lumières principales
+    try { const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture; scene.environmentIntensity = 0.28; pm.dispose(); } catch (e) { /* ancien GPU : lumières seules */ }
+    scene.add(new THREE.HemisphereLight(0xf4f2ef, 0x2e2e34, 0.55));
+    const key = new THREE.DirectionalLight(0xfff4ea, 2.0); key.position.set(2.4, 2.5, 1.7); scene.add(key); // lumière principale de trois-quarts : volumes plus lisibles
     const fill = new THREE.DirectionalLight(0xf0f2ff, 0.6); fill.position.set(-2.2, 1.4, 1.2); scene.add(fill);
     const rim = new THREE.DirectionalLight(0xffffff, 0.75); rim.position.set(0, 2.2, -2.8); scene.add(rim);
     const low = new THREE.DirectionalLight(0xffffff, 0.25); low.position.set(0, -1, 1.5); scene.add(low);
@@ -776,6 +779,20 @@ const Engine = {
   },
 };
 
+// ---------------------------------------------------------------- peau : matériau physique + diffusion sous-cutanée approchée
+// (lumière qui « rougit » dans les zones rasantes et sur les contours, comme une vraie peau), reflets doux, micro-voile
+function skinMaterial() {
+  const m = new THREE.MeshPhysicalMaterial({ color: 0xc99b7d, roughness: 0.5, metalness: 0, specularIntensity: 0.45, specularColor: new THREE.Color(0xffe6dc),
+    sheen: 0.3, sheenRoughness: 0.5, sheenColor: new THREE.Color(0xff9c85), clearcoat: 0.04, clearcoatRoughness: 0.55, envMapIntensity: 0.5 });
+  m.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+      { float fres = 1.0 - clamp(dot(normalize(normal), normalize(vViewPosition)), 0.0, 1.0);
+        totalEmissiveRadiance += diffuseColor.rgb * vec3(0.75, 0.22, 0.14) * (0.12 * fres * fres * fres); }`);
+  };
+  m.customProgramCacheKey = () => 'inkSkin1';
+  return m;
+}
+
 // ---------------------------------------------------------------- corps
 const Body = {
   mesh: null, isCustom: false, k: 1, height: 1.75, bones: null, regionInfo: {},
@@ -875,6 +892,7 @@ const Body = {
     const H = this.H; const P = this.composeHuman({ ...DEFAULT_PARAMS }).body;
     this.setup(P, H.index.slice(), H.region, H.W8, false);
     const col = new THREE.BufferAttribute(Float32Array.from(H.tint), 3); this.geom.setAttribute('color', col); this._skinG = null;
+    try { if (!H.ao) this.bakeAO(); } catch (e) { H.ao = null; }
     this.material.vertexColors = true; this.material.needsUpdate = true;
     Eyes.build();
   },
@@ -924,7 +942,7 @@ const Body = {
     this.vfStart = cnt; this.vfList = list;
     this.stamp = new Uint32Array(this.nF); this.gen = 1; this.geo = null;
     // peau : léger voile (sheen) pour un rendu moins plastique
-    const mat = this.material || (this.material = new THREE.MeshPhysicalMaterial({ color: 0xc99b7d, roughness: 0.52, metalness: 0, sheen: 0.35, sheenRoughness: 0.55, sheenColor: new THREE.Color(0xffc9b0), clearcoat: 0.04, clearcoatRoughness: 0.6 }));
+    const mat = this.material || (this.material = skinMaterial());
     mat.vertexColors = false; mat.needsUpdate = true;
     this.mesh = new THREE.Mesh(geom, mat); this.mesh.name = 'body'; this.mesh.renderOrder = 0;
     Engine.scene.add(this.mesh);
@@ -988,12 +1006,27 @@ const Body = {
     Hair.rebuild();
     Engine.requestRender();
   },
+  // occlusion ambiante pré-calculée (aisselles, plis, entre les doigts, nombril…) sur le maillage de base puis subdivisée
+  bakeAO() {
+    const H = this.H; if (!H || this.isCustom) return;
+    const n = H.bodyIdx.length, P = this.geom.attributes.position.array, N = this.geom.attributes.normal.array, bvh = this.geom.boundsTree;
+    const dirs = []; for (let i = 0; i < 14; i++) { const u = (i + 0.5) / 14, phi = i * 2.399963; const r = Math.sqrt(u); dirs.push([r * Math.cos(phi), r * Math.sin(phi), Math.sqrt(1 - u)]); } // hémisphère (cosinus)
+    const ao = new Float32Array(n), ray = new THREE.Ray(), o = new THREE.Vector3(), d = new THREE.Vector3(), t1 = new THREE.Vector3(), t2 = new THREE.Vector3(), nn = new THREE.Vector3();
+    for (let v = 0; v < n; v++) {
+      nn.set(N[v * 3], N[v * 3 + 1], N[v * 3 + 2]).normalize(); t1.set(Math.abs(nn.x) < 0.9 ? 1 : 0, Math.abs(nn.x) < 0.9 ? 0 : 1, 0).cross(nn).normalize(); t2.crossVectors(nn, t1);
+      o.set(P[v * 3], P[v * 3 + 1], P[v * 3 + 2]).addScaledVector(nn, 0.0025); let occ = 0;
+      for (const [a, b, c] of dirs) { d.copy(t1).multiplyScalar(a).addScaledVector(t2, b).addScaledVector(nn, c); ray.set(o, d); const hit = bvh.raycastFirst(ray, THREE.DoubleSide, 0, 0.14); if (hit) occ += 1 - hit.distance / 0.14 * 0.5; }
+      ao[v] = 1 - occ / dirs.length;
+    }
+    const full = H.ccBody.apply(ao, 1); H.ao = new Float32Array(full.length); for (let i = 0; i < full.length; i++) H.ao[i] = clamp(0.35 + 0.65 * Math.pow(full[i], 1.3), 0.35, 1);
+    this._skinG = null;
+  },
   // détail de peau (texture MakeHuman) mélangé homme/femme selon le réglage de genre
   updateSkin(p) {
     const H = this.H; if (!H.skinM || this.isCustom) return;
     const g = Math.round(clamp((p.gender + 1) / 2, 0, 1) * 20) / 20; if (this._skinG === g) return; this._skinG = g;
     const c = this.geom.attributes.color.array, M = H.skinM, F = H.skinF;
-    for (let i = 0; i < c.length; i++) c[i] = F[i] + (M[i] - F[i]) * g;
+    const ao = H.ao; for (let i = 0; i < c.length; i++) c[i] = (F[i] + (M[i] - F[i]) * g) * (ao ? ao[(i / 3) | 0] : 1);
     this.geom.attributes.color.needsUpdate = true;
   },
   updateBonesCustom() {
@@ -1151,18 +1184,21 @@ const Proxies = {
     const t = new THREE.TextureLoader().load('assets/models/px/' + file, () => Engine.requestRender()); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
     return (this.tex[name] = t);
   },
-  clear(kind) { const m = this.meshes[kind]; if (m) { Engine.scene.remove(m); m.geometry.dispose(); m.material.dispose(); delete this.meshes[kind]; } },
+  clear(kind) { const m = this.meshes[kind]; if (m) { Engine.scene.remove(m); m.geometry.dispose(); m.material.dispose(); if (m.userData.soft) m.userData.soft.material.dispose(); delete this.meshes[kind]; } },
   clearAll() { for (const k of Object.keys(this.meshes)) this.clear(k); },
   make(kind, name, color, opts = {}) {
     const H = Body.H, px = H && H.proxies[name]; if (!px) return this.clear(kind);
     const cur = this.meshes[kind];
-    if (cur && cur.userData.name === name) { cur.material.color.set(color).multiplyScalar(opts.gain || 1); this.place(cur); return; }
+    if (cur && cur.userData.name === name) { cur.material.color.set(color).multiplyScalar(opts.gain || 1); if (cur.userData.soft) cur.userData.soft.material.color.copy(cur.material.color); this.place(cur); return; }
     this.clear(kind);
     const n = px.v.length, g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
     g.setAttribute('uv', new THREE.BufferAttribute(px.uv, 2)); g.setIndex(new THREE.BufferAttribute(Uint32Array.from(px.tri), 1));
     const mat = new THREE.MeshStandardMaterial({ map: this.texture(name, px.tex), color: new THREE.Color(color).multiplyScalar(opts.gain || 1), alphaTest: opts.alphaTest || 0.4, transparent: false, side: THREE.DoubleSide, roughness: opts.rough || 0.62, metalness: 0, alphaToCoverage: true, envMapIntensity: 0.45 });
-    const m = new THREE.Mesh(g, mat); m.userData.name = name; m.renderOrder = 2; Engine.scene.add(m); this.meshes[kind] = m; this.place(m);
+    const m = new THREE.Mesh(g, mat); m.userData.name = name; m.renderOrder = 2; Engine.scene.add(m); this.meshes[kind] = m;
+    // deuxième passe transparente : bords de mèches et ligne d'implantation adoucis (au lieu d'un découpage net)
+    const soft = new THREE.Mesh(g, mat.clone()); soft.material.alphaTest = 0.02; soft.material.transparent = true; soft.material.depthWrite = false; soft.material.alphaToCoverage = false; soft.renderOrder = 3; m.add(soft); m.userData.soft = soft;
+    this.place(m);
   },
   place(m) {
     const H = Body.H, px = H.proxies[m.userData.name], pos = H.pos, k = Body.k, sh = (Body._hipY || 0) * ((Body.legL || 1) - 1);
@@ -1184,7 +1220,7 @@ const Proxies = {
       const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(H.ccGen.n * 3), 3)); g.setIndex(new THREE.BufferAttribute(quadsToIndex(H.ccGen.quads), 1));
       m = new THREE.Mesh(g, new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.55, sheen: 0.3, sheenColor: new THREE.Color(0xffc9b0) })); m.renderOrder = 0; Engine.scene.add(m); this.meshes.gen = m;
     }
-    m.material.color.set(Body.material.color).multiplyScalar(0.9).lerp(new THREE.Color(0x9a5a4a), 0.12);
+    m.material.color.set(Body.material.color).multiplyScalar(0.8).lerp(new THREE.Color(0x8a4a3c), 0.15);
     const pos = H.pos, raw = new Float32Array(H.genIdx.length * 3); for (let i = 0; i < H.genIdx.length; i++) { const r = H.genIdx[i] * 3; raw[i * 3] = pos[r]; raw[i * 3 + 1] = pos[r + 1]; raw[i * 3 + 2] = pos[r + 2]; }
     const P = H.ccGen.apply(raw, 3), o = m.geometry.attributes.position.array, k = Body.k, sh = (Body._hipY || 0) * ((Body.legL || 1) - 1);
     for (let i = 0; i < P.length; i += 3) { o[i] = P[i] * k; o[i + 1] = (P[i + 1] + sh) * k; o[i + 2] = P[i + 2] * k; }
@@ -1202,7 +1238,7 @@ const Proxies = {
   update() {
     if (!S.project || Body.isCustom || !Body.H) { this.clearAll(); return; }
     const av = S.project.avatar, st = hairStyleOf(av.hair.style);
-    if (st && st !== 'none' && st !== 'rase') this.make('hair', st, av.hair.color, { gain: 2.2, rough: 0.78, alphaTest: 0.45 }); else this.clear('hair');
+    if (st && st !== 'none' && st !== 'rase') this.make('hair', st, av.hair.color, { gain: 2.2, rough: 0.72, alphaTest: 0.55 }); else this.clear('hair');
     this.make('brows', 'eyebrow001', new THREE.Color(av.hair.color).multiplyScalar(0.8), { gain: 1, alphaTest: 0.3 });
     this.make('lashes', 'eyelashes02', '#151110', { gain: 1, alphaTest: 0.3 });
     this.genitals();
@@ -3835,15 +3871,16 @@ const AI = {
       const adds = st.mode === 'ajouts' || st.mode === 'retouche';
       // 1. quoi (simple : « compléter mon bras » ; autres modes en petit)
       if (st.mode === 'retouche') form.append(h('div', { class: 'note' }, 'Retouche d’un ajout : seul ce calque sera refait, tout le reste est protégé.'));
-      else form.append(h('div', { class: 'row', style: { flexWrap: 'wrap', marginBottom: '8px' } }, UI.seg([['ajouts', '✦ Compléter mon bras'], ['motif', 'Un motif'], ['manchette', 'Bras vierge : manchette']], st.mode, (v) => { this.savePrompt(st); st.mode = v; st.prompt = localStorage.getItem('inkbody.ai.prompt.' + v) || ''; draw(); })));
-      if (st.mode !== 'motif') form.append(UI.seg([['r', 'Bras droit'], ['l', 'Bras gauche']], st.side, (v) => { st.side = v; st.edits = null; draw(); }, st.mode === 'retouche'));
+      else form.append(h('div', { class: 'row', style: { flexWrap: 'wrap', marginBottom: '8px' } }, UI.seg([['ajouts', '✦ Compléter mon bras'], ['motif', 'Un motif'], ['manchette', 'Bras vierge : manchette'], ['photo', '📷 Photo réaliste']], st.mode, (v) => { this.savePrompt(st); st.mode = v; st.prompt = localStorage.getItem('inkbody.ai.prompt.' + v) || ''; draw(); })));
+      if (st.mode === 'photo') form.append(h('div', { class: 'note' }, 'L’IA transforme la vue actuelle de l’avatar (avec vos tatouages) en photo réaliste. C’est une simulation : l’IA peut légèrement redessiner les motifs ; vos calques ne sont jamais modifiés. Cadrez la vue avant de lancer.'));
+      if (st.mode !== 'motif' && st.mode !== 'photo') form.append(UI.seg([['r', 'Bras droit'], ['l', 'Bras gauche']], st.side, (v) => { st.side = v; st.edits = null; draw(); }, st.mode === 'retouche'));
       if (st.mode === 'manchette' && this.armHasTattoos(st.side)) form.append(h('div', { class: 'note warn' }, 'Ce bras est déjà tatoué : choisissez « Compléter mon bras » pour ne rien recouvrir.'));
       if (st.mode === 'ajouts') { const B = Board.frame(st.side); const notEx = B ? Board.tattoosOn(B).filter(t => !(t.locked || t.status === 'existing')) : [];
         if (notEx.length) form.append(h('div', { class: 'note', style: { marginTop: '8px' } }, notEx.length + ' tatouage(s) de ce bras ne sont pas marqués « Existant ». Ils sont protégés de toute façon ; s’ils sont déjà sur votre peau, verrouillez-les : ',
           h('button', { class: 'btn sm primary', onclick: () => { for (const t of notEx) App.update(t, { status: 'existing' }, '', false); toast(notEx.length + ' tatouage(s) marqués existants et verrouillés.', 'ok'); draw(); } }, 'Les marquer existants et verrouiller'))); }
       // 2. la demande
       const ta = h('textarea', { class: 'inp', rows: 4, autocapitalize: 'sentences', style: { fontSize: '16px', marginTop: '10px' },
-        placeholder: adds ? 'Ex. : gros tournesol sur l’épaule, feuillage large autour du roi, liaison au coude vers l’avant-bras, ombrages progressifs' : st.mode === 'manchette' ? 'Ex. : grande rose sur l’épaule, roi d’échecs, volutes baroques…' : 'Ex. : rose réaliste avec feuilles, ombrage doux',
+        placeholder: st.mode === 'photo' ? 'Facultatif : ambiance (ex. lumière chaude, fond noir, plan serré sur le bras)' : adds ? 'Ex. : gros tournesol sur l’épaule, feuillage large autour du roi, liaison au coude vers l’avant-bras, ombrages progressifs' : st.mode === 'manchette' ? 'Ex. : grande rose sur l’épaule, roi d’échecs, volutes baroques…' : 'Ex. : rose réaliste avec feuilles, ombrage doux',
         value: st.prompt, oninput: (e) => { st.prompt = e.target.value.slice(0, 1500); this.savePrompt(st); } });
       const paste = h('button', { type: 'button', class: 'btn sm', onclick: async () => {
         try { const tx = await navigator.clipboard.readText(); if (!tx) return toast('Presse-papiers vide.'); st.prompt = (st.prompt ? st.prompt + ' ' : '') + tx.slice(0, 1500); ta.value = st.prompt; this.savePrompt(st); }
@@ -3861,7 +3898,7 @@ const AI = {
       form.append(h('button', { class: 'btn primary', disabled: blocked, style: { width: '100%', marginTop: '12px', padding: '14px' }, onclick: () => {
         if (this.accessCode) { localStorage.setItem('inkbody.ai.code', this.accessCode); localStorage.removeItem('inkbody.ai.noremember'); }
         this.prepare(st, draw, m);
-      } }, { ajouts: '✦ Générer les ajouts', retouche: '✦ Refaire cet ajout', manchette: '✦ Créer la manchette', motif: '✦ Créer le motif' }[st.mode]));
+      } }, { ajouts: '✦ Générer les ajouts', retouche: '✦ Refaire cet ajout', manchette: '✦ Créer la manchette', motif: '✦ Créer le motif', photo: '📷 Créer la photo réaliste' }[st.mode]));
       // options (repliées)
       const opts = h('details', { class: 'sec', style: { marginTop: '14px' }, open: !!st.optOpen, ontoggle: (e) => st.optOpen = e.target.open }, h('summary', { style: { cursor: 'pointer', fontWeight: 600 } }, 'Options'));
       if (adds) { this.drawMaskSection(opts, st); opts.append(h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!st.split, onchange: (e) => st.split = e.target.checked }), 'Un calque par élément (sinon un seul calque « Ajouts IA »)')); }
@@ -3939,6 +3976,7 @@ const AI = {
   },
   async prepare(st, redraw, m) {
     if (!this.endpoint) return toast('Aucun service IA configuré.', 'err');
+    if (st.mode === 'photo') return this.photo(st, m);
     if (!st.prompt.trim()) return toast('Décrivez ce que vous voulez ajouter.');
     if (!this.accessCode) return toast('Entrez le code d’accès (ACCESS_CODE défini dans Railway).');
     const send = { mode: st.mode === 'retouche' ? 'ajouts' : st.mode, side: st.side, prompt: st.prompt.trim(), style: st.style, references: [], n: 2 };
@@ -3953,13 +3991,13 @@ const AI = {
       previews.unshift(['Planche du bras (vos calques réels)', send.zoneImage], ['Masque : noir = protégé', send.mask]);
       ctx = { B, M, side: st.side, mode: st.mode, targets: (st.targets || []).slice(), targetsSnap: JSON.stringify(S.tattoos.filter(t => (st.targets || []).includes(t.id))) };
     }
-    if (!previews.length) return this.call(send, st, redraw, m, ctx);
+    if (!send.references.length || this.consentOk) return this.call(send, st, redraw, m, ctx); // la planche du bras n'est pas une photo : pas de confirmation
     let consent = false;
     const grid = h('div', { class: 'thumbs' }, previews.map(([n, u]) => h('figure', {}, h('img', { src: u, style: { background: '#fff' } }), h('figcaption', {}, n))));
     openModal({ title: 'Images envoyées au service', size: 'wide', body: h('div', {},
       h('p', {}, 'Ces images seront transmises au service IA puis au fournisseur (OpenAI). Le résultat ne remplace jamais vos tatouages : seuls de nouveaux éléments contrôlés sont posés, en aperçu.'), grid,
-      h('label', { class: 'chk', style: { marginTop: '12px' } }, h('input', { type: 'checkbox', onchange: (e) => consent = e.target.checked }), 'J’autorise l’envoi de ces images.')),
-      actions: [{ label: 'Envoyer', cls: 'primary', onClick: async (close) => { if (!consent) return toast('Cochez l’autorisation d’envoi.'); close(); await this.call(send, st, redraw, m, ctx); } }] });
+      h('label', { class: 'chk', style: { marginTop: '12px' } }, h('input', { type: 'checkbox', onchange: (e) => consent = e.target.checked }), 'J’autorise l’envoi de ces images (pour cette session).')),
+      actions: [{ label: 'Envoyer', cls: 'primary', onClick: async (close) => { if (!consent) return toast('Cochez l’autorisation d’envoi.'); this.consentOk = true; close(); await this.call(send, st, redraw, m, ctx); } }] });
   },
   async call(send, st, redraw, m, ctx) {
     const my = ++this.reqId, projectId = S.project.id, variantId = S.project.activeVariantId;
@@ -3983,6 +4021,26 @@ const AI = {
     } catch (e) { busy.close(); toast('Génération impossible : ' + (e.name === 'AbortError' ? 'délai dépassé' : e.message), 'err', 8000); }
     finally { clearTimeout(to); }
   },
+  // ---- photo réaliste : rendu de la vue actuelle → photo IA (simple aperçu, aucun calque modifié)
+  async photo(st, m) {
+    if (!this.accessCode) return toast('Entrez le code d’accès (ACCESS_CODE défini dans Railway).');
+    const r = Engine.canvas.getBoundingClientRect(), portrait = r.height >= r.width * 0.85, land = r.width > r.height * 1.3;
+    const [w, hh] = land ? [1536, 1024] : portrait ? [1024, 1536] : [1024, 1024];
+    const img = Engine.renderOffscreen({ width: w, height: hh, background: '#2a2a2e' });
+    const g = (S.project.avatar.params.gender || 0) < 0 ? 'f' : 'm';
+    const send = { mode: 'photo', prompt: st.prompt.trim(), zoneImage: img.toDataURL('image/png'), size: w + 'x' + hh, gender: g, n: 1 };
+    const busy = Busy.show('Création de la photo réaliste (jusqu’à 2 minutes)…'); const my = ++this.reqId;
+    try {
+      const res = await fetch(this.endpoint + '/generate', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Access-Code': this.accessCode }, body: JSON.stringify(send) });
+      const j = await res.json().catch(() => ({})); if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
+      const u = (j.images || [])[0]; if (!u) throw new Error('aucune image reçue'); busy.close(); if (my !== this.reqId) return;
+      const blob = await dataURLToBlob(u), url = URL.createObjectURL(blob); m && m.close();
+      let showAvatar = false; const pic = h('img', { src: url, style: { width: '100%', borderRadius: '10px', display: 'block' } });
+      openModal({ title: 'Photo réaliste (simulation IA)', size: 'wide', body: h('div', {}, pic,
+        h('p', { class: 'muted' }, 'Simulation : l’IA peut légèrement redessiner les tatouages. Vos calques et votre projet ne sont pas modifiés.')),
+        actions: [{ label: 'Comparer avec l’avatar', onClick: () => { showAvatar = !showAvatar; pic.src = showAvatar ? img.toDataURL('image/png') : url; } }, { label: 'Télécharger', cls: 'primary', onClick: () => download(blob, 'inkbody-photo-realiste.png') }] });
+    } catch (e) { busy.close(); toast('Photo impossible : ' + e.message, 'err', 8000); }
+  },
   // ---- ajouts : extraction, contrôle, pose en calques « aperçu » (jamais de modification des calques existants)
   async applyAdditions(results, idx, st, ctx, m) {
     const busy = Busy.show('Extraction et contrôle des ajouts…');
@@ -3994,7 +4052,9 @@ const AI = {
       this.cancelPreview(true);
       const snap = await lockedSnapshot(true, ctx.targets); // tous les calques déjà présents (hors ajouts ciblés par une retouche)
       const img = await blobToImage(results[idx].blob);
-      const { kept, rejected, board } = extractAdditions(ctx.B, ctx.M, img, { split: !!st.split });
+      let ex = extractAdditions(ctx.B, ctx.M, img, { split: !!st.split }), lenient = false;
+      if (!ex.kept.length) { ex = extractAdditions(ctx.B, ctx.M, img, { split: !!st.split, lenient: true }); lenient = true; } // repli : on garde tout ce qui est hors des zones protégées
+      const { kept, rejected, board } = ex;
       const batch = uid('ia_');
       History.record();
       const placed = [], lost = [];
@@ -4008,7 +4068,7 @@ const AI = {
       // ceinture et bretelles : les calques protégés doivent être strictement identiques
       const after = await lockedSnapshot(true, [...ctx.targets, ...ok.map(t => t.id), ...bad.map(t => t.id)]);
       if (!sameSnapshot(snap, after)) { restoreLocked(snap); toast('Écart détecté sur un tatouage protégé : il a été restauré à l’identique.', 'err', 8000); }
-      this.preview = { batch, ids: ok.map(t => t.id), results, idx, st, ctx, rejected: rejected.length + bad.length + lost.length, kept: ok.length, raw: results[idx].url, boardUrl: board.toDataURL('image/png'), why: [...rejected.map(r => r.reason), ...bad.map((t) => 'empiète après pose (' + t._ov.over + '/' + t._ov.total + ' px, ' + t.widthCm + '×' + t.heightCm + ' cm)'), ...lost.map(() => 'hors du bras')] };
+      this.preview = { batch, ids: ok.map(t => t.id), results, idx, st, ctx, rejected: rejected.length + bad.length + lost.length, kept: ok.length, lenient, raw: results[idx].url, boardUrl: board.toDataURL('image/png'), why: [...rejected.map(r => r.reason), ...bad.map((t) => 'empiète après pose (' + t._ov.over + '/' + t._ov.total + ' px, ' + t.widthCm + '×' + t.heightCm + ' cm)'), ...lost.map(() => 'hors du bras')] };
       busy.close(); m && m.close(); Save.mark(); UI.refreshAll(); this.showPreviewBar();
       if (!ok.length) toast('Cette proposition ne contenait rien d’exploitable en dehors de vos tatouages. Touchez « Autre proposition » ou « Voir l’image IA ».', 'warn', 8000);
     } catch (e) { busy.close(); toast('Extraction impossible : ' + e.message, 'err', 8000); }
@@ -4188,8 +4248,13 @@ const Board = {
     const segs = B.F.segs; let i = segs.length - 1; for (let k = 0; k < segs.length; k++) if (along < segs[k].cum + segs[k].L) { i = k; break; }
     const sg = segs[i]; const ax = sg.a.clone().addScaledVector(sg.dir, clamp(along - sg.cum, 0, sg.L));
     const dir = B.F.e1[i].clone().multiplyScalar(Math.cos(phi)).addScaledVector(B.F.e2[i], Math.sin(phi));
-    const R = (Body.regionInfo[Body.regionNames[0]] && 0) || 0.022; // sous la peau (rayon minimal d'un poignet)
-    return Body.closest(ax.addScaledVector(dir, R));
+    return Body.closest(ax.addScaledVector(dir, 0.022)); // juste sous la peau (rayon minimal d'un poignet)
+  },
+  surfaceAtDepth(B, phi, along, depth) {
+    const segs = B.F.segs; along = clamp(along, 0, B.F.total - 1e-4); let i = segs.length - 1; for (let k = 0; k < segs.length; k++) if (along < segs[k].cum + segs[k].L) { i = k; break; }
+    const sg = segs[i]; const ax = sg.a.clone().addScaledVector(sg.dir, clamp(along - sg.cum, 0, sg.L));
+    const dir = B.F.e1[i].clone().multiplyScalar(Math.cos(phi)).addScaledVector(B.F.e2[i], Math.sin(phi));
+    return Body.closest(ax.addScaledVector(dir, depth));
   },
   // tatouages visibles posés sur ce bras (zone du bras, ou moignon de l'épaule près de l'axe)
   tattoosOn(B, list = S.tattoos) {
@@ -4310,11 +4375,11 @@ function extractAdditions(B, M, result, opt = {}) {
   for (let p = 0; p < w2 * h2; p++) { if (!dil[p] || lab[p] >= 0) continue; let sp = 0; stack[sp++] = p; lab[p] = nl; while (sp) { const q = stack[--sp], x = q % w2, y = (q / w2) | 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= w2 || yy >= h2) continue; const r = yy * w2 + xx; if (dil[r] && lab[r] < 0) { lab[r] = nl; stack[sp++] = r; } } } nl++; }
   const cnt = new Int32Array(nl), inProt = new Int32Array(nl), lbl = new Int32Array(W * H).fill(-1);
   for (let i = 0; i < W * H; i++) { if (A[i] <= 0.12) continue; const L = lab[((i / W) >> 1) * w2 + ((i % W) >> 1)]; if (L < 0) continue; lbl[i] = L; cnt[L]++; if (protS[i]) inProt[L]++; }
-  const minPx = Math.max(80, Math.round((0.003 / B.mpp) ** 2)), keepL = new Uint8Array(nl), rejected = [];
+  const minPx = opt.lenient ? 40 : Math.max(80, Math.round((0.003 / B.mpp) ** 2)), keepL = new Uint8Array(nl), rejected = [];
   for (let L = 0; L < nl; L++) {
     if (cnt[L] < minPx) continue;                                                    // poussière
     const free = cnt[L] - inProt[L];
-    if (inProt[L] / cnt[L] > 0.45) { rejected.push({ reason: 'surtout dessiné sur une zone occupée', n: cnt[L] }); continue; }
+    if (!opt.lenient && inProt[L] / cnt[L] > 0.45) { rejected.push({ reason: 'surtout dessiné sur une zone occupée', n: cnt[L] }); continue; }
     if (free < minPx) continue;
     keepL[L] = 1;
   }
@@ -4344,10 +4409,13 @@ function extractAdditions(B, M, result, opt = {}) {
 async function placeBoardElement(B, el, meta) {
   const cx = el.x0 + el.w / 2, cy = el.y0 + el.h / 2;
   const phi = ((cx - B.bx0) / B.bw - 0.5) * 2 * Math.PI, along = cy * B.mpp;
-  const hit = Board.surfaceAt(B, phi, along); if (!hit) return null;
-  const region = Body.regionName(hit.faceIndex);
-  const okRegion = B.limb.regions.includes(region) || (region === 'torso' && along < B.F.segs[0].L + 0.02);
-  if (!okRegion) return null;
+  // point de peau du bras : plusieurs essais (profondeur, léger glissement le long du membre) avant d'abandonner
+  let hit = null, region = null;
+  for (const [depth, dl] of [[0.022, 0], [0.012, 0], [0.032, 0], [0.018, 0.01], [0.018, -0.01], [0.018, 0.02]]) {
+    const hh = Board.surfaceAtDepth(B, phi, along + dl, depth); if (!hh) continue; const rg = Body.regionName(hh.faceIndex);
+    if (B.limb.regions.includes(rg) || (rg === 'torso' && along < B.F.segs[0].L + 0.03)) { hit = hh; region = rg; break; }
+  }
+  if (!hit) return null;
   // l'ancre réelle (point de peau) fixe le centre du motif : on recentre la découpe sur elle (aucune dérive)
   const ac = Board.coords(B, hit.point.x, hit.point.y, hit.point.z); let aphi = ac.phi; if (aphi - phi > Math.PI) aphi -= 2 * Math.PI; if (phi - aphi > Math.PI) aphi += 2 * Math.PI;
   const [ax, ay] = Board.toPx(B, aphi, ac.along);

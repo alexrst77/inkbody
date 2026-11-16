@@ -6,6 +6,9 @@ URL='http://127.0.0.1:8770/inkbody-depot/'
 VP={'width':1024,'height':1366}; TOUCH=True
 A=['--use-gl=angle','--use-angle=swiftshader','--enable-unsafe-swiftshader','--ignore-gpu-blocklist']
 res=[]
+async def consent(pg):
+    await pg.wait_for_timeout(300)
+    if await pg.locator('.modal >> text=J’autorise').count(): await pg.click('.modal >> text=J’autorise'); await pg.click('text=Envoyer')
 def check(name, ok, info=''): ok=bool(ok); res.append(ok); print(('OK  ' if ok else 'FAIL'), name, '' if ok else info)
 def du(d): return Image.open(io.BytesIO(base64.b64decode(d.split(',',1)[1]))).convert('RGBA')
 def fake_model(body, variant=0):
@@ -72,7 +75,7 @@ async def main():
         await pg.fill('.modal textarea','grande rose sur l épaule, acanthe large autour du roi, liaison au coude')
         await (pg.fill('.modal input[type=password]','code') if await pg.locator('.modal input[type=password]').first.is_visible() else asyncio.sleep(0))
         await pg.click('text=Générer les ajouts'); await pg.wait_for_timeout(500)
-        await pg.click('.modal >> text=J’autorise'); await pg.click('text=Envoyer')
+        await consent(pg)
         await pg.wait_for_selector('.ia-bar',timeout=60000); await pg.wait_for_timeout(1500)
         bar=await pg.inner_text('.ia-bar'); print('barre :', bar.replace(chr(10),' | '), await pg.evaluate('() => InkBody.AI.preview.why'))
         sent=calls[0]; check('Envoyé : planche du bras + masque + mode ajouts', sent['mode']=='ajouts' and sent.get('zoneImage') and sent.get('mask'), list(sent.keys()))
@@ -117,7 +120,7 @@ async def main():
         tid=await pg.evaluate("() => InkBody.S.tattoos.find(t=>t.origin==='ia').id")
         await pg.evaluate("id => InkBody.AI.open({mode:'retouche',targets:[id],side:'r',prompt:'feuillage plus large'})", tid); await pg.wait_for_timeout(1500)
         await (pg.fill('.modal input[type=password]','code') if await pg.locator('.modal input[type=password]').first.is_visible() else asyncio.sleep(0)); await pg.click('.modal button.primary:has-text("Refaire cet ajout")'); await pg.wait_for_timeout(400)
-        await pg.click('.modal >> text=J’autorise'); await pg.click('text=Envoyer'); await pg.wait_for_selector('.ia-bar',timeout=60000); await pg.wait_for_timeout(800)
+        await consent(pg); await pg.wait_for_selector('.ia-bar',timeout=60000); await pg.wait_for_timeout(800)
         await pg.click('.ia-bar >> text=Garder'); await pg.wait_for_timeout(400)
         now=await pg.evaluate("id => ({gone: !InkBody.S.tattoos.some(t=>t.id===id), others: JSON.stringify(InkBody.S.tattoos.filter(t=>t.origin!=='ia' || !t.batch || true).filter(t=>t.id!==id))})", tid)
         o1=[t for t in json.loads(others)]; o2=json.loads(now['others']); ids2={t['id']:t for t in o2}
@@ -126,7 +129,7 @@ async def main():
         delay['s']=3
         await pg.evaluate("() => InkBody.AI.open({mode:'ajouts',side:'r'})"); await pg.wait_for_timeout(1200)
         await (pg.fill('.modal input[type=password]','code') if await pg.locator('.modal input[type=password]').first.is_visible() else asyncio.sleep(0)); await pg.fill('.modal textarea','test'); await pg.click('text=Générer les ajouts'); await pg.wait_for_timeout(400)
-        await pg.click('.modal >> text=J’autorise'); await pg.click('text=Envoyer'); await pg.wait_for_timeout(500)
+        await consent(pg); await pg.wait_for_timeout(500)
         n0=await pg.evaluate("() => { InkBody.AI.reqId++; return InkBody.S.tattoos.length; }")  # une demande plus récente part entre-temps
         await pg.wait_for_timeout(4500)
         n1=await pg.evaluate("() => [InkBody.S.tattoos.length, !!document.querySelector('.ia-bar')]")

@@ -37,7 +37,7 @@ async def main():
         snap0=await pg.evaluate("async () => JSON.stringify(await InkBody.lockedSnapshot())")
         await pg.evaluate("() => { localStorage.setItem('inkbody.ai.code','x'); InkBody.AI.open(); }"); await pg.wait_for_timeout(1200)
         await pg.fill('.modal textarea','gros tournesol sur l épaule, feuillage autour'); await pg.click('text=Générer les ajouts'); await pg.wait_for_timeout(400)
-        await pg.click('.modal >> text=J’autorise'); await pg.click('text=Envoyer'); await pg.wait_for_selector('.ia-bar',timeout=90000); await pg.wait_for_timeout(1500)
+        await (pg.click('.modal >> text=J’autorise') if await pg.locator('.modal >> text=J’autorise').count() else asyncio.sleep(0)); await (pg.click('text=Envoyer') if await pg.locator('text=Envoyer').count() else asyncio.sleep(0)); await pg.wait_for_selector('.ia-bar',timeout=90000); await pg.wait_for_timeout(1500)
         print('barre :', (await pg.inner_text('.ia-bar')).split('\n')[0], await pg.evaluate('() => InkBody.AI.preview.why'))
         r=await pg.evaluate("""() => { const {AI,overlapReport,S}=InkBody; const P=AI.preview; const add=S.tattoos.filter(t=>P.ids.includes(t.id)); return {n:add.length, core:add.map(t=>overlapReport(P.ctx.B,[t],P.ctx.M.core)), dims:add.map(t=>[t.widthCm,t.heightCm,t.mode,t.region])}; }""")
         print(r)
@@ -46,5 +46,10 @@ async def main():
         for i,(dx,dy,dz) in enumerate([(1.2,0.1,0.6),(0.4,0.1,1.2),(-0.3,0.3,-1.2)]):
             await pg.evaluate("([dx,dy,dz]) => { document.querySelectorAll('.toast,.ia-bar').forEach(n=>n.style.display='none'); const {Body,Engine}=InkBody; const u=Body.bones.upperarm_r; const s=Math.sign(u.a.x); const t=u.b.clone(); Engine.flyTo(t,t.clone().add(new t.constructor(s*dx,dy,dz)),false); }", [dx,dy,dz])
             await pg.wait_for_timeout(600); await pg.screenshot(path=f'r_view{i}.png')
+        # photo réaliste (mode IA) : une image s'affiche, aucun calque modifié
+        n0=await pg.evaluate("() => JSON.stringify(InkBody.S.tattoos)")
+        await pg.evaluate("() => { document.querySelectorAll('.ia-bar').forEach(n=>n.remove()); InkBody.AI.open({mode:'photo'}); }"); await pg.wait_for_timeout(800)
+        await pg.click('text=Créer la photo réaliste'); await pg.wait_for_selector('text=Photo réaliste (simulation IA)',timeout=60000)
+        print('photo affichée, calques inchangés :', n0==await pg.evaluate("() => JSON.stringify(InkBody.S.tattoos)"))
         print('errs',errs); await b.close()
 asyncio.run(main())
