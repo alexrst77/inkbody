@@ -3943,21 +3943,23 @@ const AI = {
     return m[1].replace(/^(un|une|des|le|la|les|gros|grosse|grand|grande|beau|belle|petit|petite)\s+/gi, '').replace(/^(un|une|des|le|la|les|gros|grosse|grand|grande)\s+/gi, '').trim().split(/\s+/).slice(-3).join(' ');
   },
   defaultForbid(B) {
-    const names = Board.tattoosOn(B).map(t => t.name.replace(/\(.*?\)/g, '').replace(/^(Ajout IA|Ajouts IA).*$/i, '').trim()).filter(Boolean);
+    const names = Board.tattoosOn(B).map(t => t.name.replace(/\(.*?\)/g, '').replace(/\.(png|jpe?g|webp|heic)$/i, '').replace(/^(Ajout IA|Ajouts IA).*$/i, '').trim())
+      .filter(n => n && !/^[0-9a-f]{6,}[-_ ]/i.test(n) && !/^(img|image|photo|screenshot|capture|dsc|pxl)[\s_-]*\d/i.test(n) && /[a-zà-ÿ]{3,}/i.test(n) && (n.match(/\d/g) || []).length < 4); // pas les noms de fichiers (IMG_1234, identifiants iPhone…)
     return [...new Set(names)].join(', ');
   },
+  cleanMain(m) { let s = String(m || '').trim(); for (let k = 0; k < 4; k++) s = s.replace(/^(un|une|des|le|la|les|l[’']|gros|grosse|grand|grande|beau|belle|petit|petite|énorme|joli|jolie)\s*/i, '').trim(); return s; },
   computePlan(st) {
     const B = Board.frame(st.side); if (!B) return null;
     const list = Board.tattoosOn(B);
     const M = Board.masks(B, { marginCm: st.marginCm, gaps: st.gaps, includeHand: st.includeHand, edits: st.edits, protectList: list });
-    const P = Board.plan(B, M, { main: (st.main || '').trim(), includeHand: st.includeHand, off: st.zonesOff });
+    const P = Board.plan(B, M, { main: this.cleanMain(st.main), includeHand: st.includeHand, off: st.zonesOff });
     st._B = B; st._M = M; st._P = P; return P;
   },
   // plan de composition : zones libres et dimensions calculées depuis la peau et vos calques (avant tout appel à l'IA)
   drawPlan(form, st) {
     const B = Board.frame(st.side); if (!B) return;
     if (st.main == null) st.main = this.guessMain(st.prompt);
-    if (st.forbid == null) st.forbid = this.defaultForbid(B);
+    if (st.forbid == null || /^[0-9A-F]{8}-[0-9A-F]{4}-/i.test(st.forbid)) st.forbid = this.defaultForbid(B);
     const box = h('div', { class: 'sec', style: { marginTop: '10px' } }, h('h4', {}, 'Plan de composition (calculé sur votre bras)'));
     const info = h('div', { class: 'muted', style: { fontSize: '12.5px' } }, 'calcul…');
     const view = newCanvas(BOARD_W / 6, BOARD_H / 6); view.style.cssText = 'width:120px;height:180px;border-radius:8px;flex:0 0 auto;background:#fff';
@@ -3966,7 +3968,7 @@ const AI = {
       const P = this.computePlan(st); if (!P) return;
       const io = Board.guideInputs(st._B, P), g = ctx2d(view); g.drawImage(io.image, 0, 0, view.width, view.height); g.globalAlpha = 0.85; g.drawImage(st._M.ink, 0, 0, view.width, view.height); g.globalAlpha = 1;
       zl.innerHTML = '';
-      if (st.main) zl.append(h('div', {}, P.disc ? '◉ ' + cap(st.main) + ' : ' + P.disc.dCm + ' cm max (deltoïde, au-dessus des existants)' : '⚠ Pas assez de place libre sur l’épaule pour « ' + st.main + ' » : il sera traité comme ornement.'));
+      if (st.main) zl.append(h('div', {}, P.disc ? '◉ ' + cap(this.cleanMain(st.main)) + ' : ' + P.disc.dCm + ' cm max (deltoïde, au-dessus des existants)' : '⚠ Pas assez de place libre sur l’épaule pour « ' + st.main + ' » : il sera traité comme ornement.'));
       for (const z of P.zones) zl.append(h('label', { class: 'chk', style: { margin: '2px 0' } }, h('input', { type: 'checkbox', checked: z.on, onchange: (e) => { st.zonesOff = e.target.checked ? st.zonesOff.filter(k => k !== z.key) : [...st.zonesOff, z.key]; upd(); } }), z.label + ' · ' + z.areaCm2 + ' cm²'));
       info.textContent = 'Jaune = motif principal (taille max), blanc = zones autorisées, bleu = interdit (vos tatouages + marge, torse, main). L’IA ne peut rien poser ailleurs.';
     }, 20);
@@ -4057,8 +4059,9 @@ const AI = {
       const P = st.mode === 'ajouts' ? st._P : Board.planFromMask(B, M, st.includeHand);
       if (!P.zones.some(z => z.on)) return toast('Aucune zone autorisée : cochez au moins une zone du plan.', 'err');
       const io = Board.guideInputs(B, P);
-      send.plan = { main: P.disc ? st.main : '', mainCm: P.disc ? P.disc.dCm : 0, zones: P.zones.filter(z => z.on).map(z => ({ key: z.key, label: z.label, wCm: z.wCm, hCm: z.hCm })) };
+      send.plan = { main: P.disc ? this.cleanMain(st.main) : '', mainCm: P.disc ? P.disc.dCm : 0, zones: P.zones.filter(z => z.on).map(z => ({ key: z.key, label: z.label, wCm: z.wCm, hCm: z.hCm })) };
       send.forbidden = (st.forbid || '').slice(0, 250);
+      for (const w of (st.forbid || '').split(/[,;]+/).map(x => x.trim()).filter(x => x.length > 1)) send.prompt = send.prompt.replace(new RegExp('\\b(du|de la|des|le|la|les|mon|ma|mes|l[’\']|d[’\'])?\\s*' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + 's?\\b', 'gi'), ' de la zone bleue');
       send.zoneImage = io.image.toDataURL('image/png'); send.mask = io.mask.toDataURL('image/png');
       if (st.mode === 'retouche') send.prompt = 'Modify ONLY the elements inside the editable area: ' + send.prompt;
       previews.unshift(['Planche guide (aucune image de vos tatouages)', send.zoneImage], ['Masque : noir = interdit', send.mask]);
@@ -4126,19 +4129,21 @@ const AI = {
       const before = this.preview ? this.preview.before : JSON.stringify(S.variant.tattoos);
       if (this.preview) this.restoreBefore(this.preview); else History.record();
       const snap = await lockedSnapshot(true, ctx.targets);
-      const img = await blobToImage(results[idx].blob);
+      const img = await blobToImage(results[idx].blob); const T = [performance.now()], lap = (k) => { T.push(performance.now()); (this.timing = this.timing || {})[k] = Math.round(T[T.length - 1] - T[T.length - 2]); };
       // 1. extraction (zones autorisées strictes, réductions, damier, noirs allégés)
+      await new Promise(r => setTimeout(r, 30)); // laisse l'écran afficher la progression avant le calcul
       const ex = extractParts(ctx.B, ctx.M, ctx.P, img, { color: /aquarelle|couleur|color/i.test(st.style + ' ' + st.prompt) });
-      let parts = ex.parts; const why = ex.why.slice(), checks = [];
+      let parts = ex.parts; const why = ex.why.slice(), checks = []; lap('extraction');
       // 2. recopie d'un existant : forme de chaque tatouage du bras recherchée dans les ajouts, puis effacée (indicatif)
       const exist = Board.tattoosOn(ctx.B).filter(t => !ctx.targets.includes(t.id) && !t.pending);
       const exB = []; for (const t of exist) { let bm = null; try { bm = await Images.bitmap(t.imageId); } catch (e) { /* image absente */ } exB.push({ t, bm }); }
-      const copies = removeCopies(ctx.B, parts, exB);
+      busy.set(null, 'Recherche de recopies de vos tatouages…'); const copies = await removeCopies(ctx.B, parts, exB);
       if (copies.length) why.push('recopie de « ' + [...new Set(copies.map(c => c.name))].join(' », « ') + ' » effacée');
-      parts = parts.filter(p => imageOpaqueRatioCanvas(p.canvas) > 0);
+      parts = parts.filter(p => imageOpaqueRatioCanvas(p.canvas) > 0); lap('copies');
       // 3. contrôle visuel des motifs interdits (serveur ; seule l'image des ajouts est envoyée)
-      const vis = await this.visualCheck(ctx, parts, st);
-      if (vis.ok && vis.remove.length) { parts = parts.filter(p => !vis.remove.includes(p.id)); why.push('motif interdit détecté et retiré : ' + [...new Set(vis.labels)].join(', ')); }
+      busy.set(null, 'Contrôle visuel des motifs interdits…'); const vis = await this.visualCheck(ctx, parts, st);
+      if (vis.ok && vis.labels.length) { parts = parts.filter(p => !vis.remove.includes(p.id) && imageOpaqueRatioCanvas(p.canvas) > 0); why.push('motif interdit détecté et effacé : ' + [...new Set(vis.labels)].join(', ')); }
+      lap('visuel');
       checks.push(vis.ok ? ['✓', 'contrôle visuel des motifs interdits (indicatif)'] : ['–', 'contrôle visuel indisponible (' + vis.err + ')']);
       if (ex.density > 0.68) why.push('composition très chargée (' + Math.round(ex.density * 100) + ' % de la zone)');
       // 4. pose : un calque par zone (motif principal, feuillage, coude, avant-bras), transparence réelle
@@ -4146,16 +4151,17 @@ const AI = {
       for (const el of layers) { const t = await placeBoardElement(ctx.B, el, { name: el.name, batch, note: st.prompt.slice(0, 200) }); el._t = t; if (t) placed.push(t); else lost.push(el); }
       // 5. contrôles sur l'empreinte réellement posée : existants, zones interdites, torse (3D)
       const forbid = newCanvas(BOARD_W, BOARD_H); { const g = ctx2d(forbid); g.fillStyle = '#000'; g.fillRect(0, 0, BOARD_W, BOARD_H); g.globalCompositeOperation = 'destination-out'; g.drawImage(ctx.P.allowed, 0, 0); }
+      lap('pose'); busy.set(null, 'Vérification sur l’avatar…'); await new Promise(r => setTimeout(r, 0));
       const bad = [];
       for (const t of placed) {
         let tor = torsoSpill(ctx.B, t); if (tor > 0) { for (let k = 0; k < 2 && tor > 0; k++) tor = await fixTorso(ctx.B, t); why.push(t.name + ' : encre retirée du torse'); }
-        const rc = overlapReport(ctx.B, [t], ctx.M.core), rf = overlapReport(ctx.B, [t], forbid); t._ov = { rc, rf, tor };
+        const [rc, rf] = overlapReports(ctx.B, t, [ctx.M.core, forbid]); t._ov = { rc, rf, tor }; await new Promise(r => setTimeout(r, 0));
         if (rc.over > Math.max(6, rc.total * 0.002)) bad.push([t, 'empiète sur un tatouage existant']);
         else if (rf.over > Math.max(30, rf.total * 0.03)) bad.push([t, 'déborde des zones autorisées']);
         else if (tor > 0.01) bad.push([t, 'déborde sur le torse']);
       }
       for (const [t] of bad) { S.variant.tattoos = S.tattoos.filter(x => x.id !== t.id); Decals.remove(t.id); }
-      const ok = placed.filter(t => !bad.some(b => b[0] === t));
+      const ok = placed.filter(t => !bad.some(b => b[0] === t)); lap('controles');
       if (ctx.mode === 'retouche') for (const id of ctx.targets) { const t = S.tattoos.find(x => x.id === id); if (t) { t.visible = false; Decals.build(t); } }
       // 6. les calques d'avant doivent être strictement identiques (données + images)
       const after = await lockedSnapshot(true, [...ctx.targets, ...ok.map(t => t.id)]);
@@ -4180,13 +4186,17 @@ const AI = {
       const W = BOARD_W, H = BOARD_H, c = newCanvas(W / 2, H / 2), g = ctx2d(c); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
       for (const p of parts) g.drawImage(p.canvas, p.x0 / 2, p.y0 / 2, p.w / 2, p.h / 2);
       const res = await fetch(this.endpoint + '/check', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Access-Code': this.accessCode },
-        body: JSON.stringify({ image: c.toDataURL('image/png'), forbidden: st.forbid || '', allowed: [st.main, 'acanthus leaves', 'scrolls', 'ornaments', 'dotwork shading', st.prompt.slice(0, 120)].filter(Boolean).join(', ') }), signal: AbortSignal.timeout ? AbortSignal.timeout(70000) : undefined });
+        body: JSON.stringify({ image: c.toDataURL('image/png'), forbidden: st.forbid || '', allowed: [st.main, 'acanthus leaves', 'scrolls', 'ornaments', 'dotwork shading', st.prompt.slice(0, 120)].filter(Boolean).join(', ') }), signal: AbortSignal.timeout ? AbortSignal.timeout(30000) : undefined });
       const j = await res.json().catch(() => ({})); if (!res.ok) return { ok: false, err: j.error || 'HTTP ' + res.status };
       const remove = [], labels = [];
       for (const f of j.found || []) {
         const [a, b, cc, d] = f.box, bx0 = a * W, by0 = b * H, bx1 = cc * W, by1 = d * H;
-        for (const p of parts) { const ix = Math.max(0, Math.min(bx1, p.x0 + p.w) - Math.max(bx0, p.x0)), iy = Math.max(0, Math.min(by1, p.y0 + p.h) - Math.max(by0, p.y0));
-          if (ix * iy > 0.3 * Math.min(p.w * p.h, (bx1 - bx0) * (by1 - by0))) { remove.push(p.id); labels.push(f.what); } }
+        // seule la zone signalée est effacée (avec une marge) : un grand bloc de feuillage soudé au motif interdit est conservé
+        const ex = (bx1 - bx0) * 0.12, ey = (by1 - by0) * 0.12;
+        for (const p of parts) { const ix = Math.max(0, Math.min(bx1, p.x0 + p.w) - Math.max(bx0, p.x0)), iy = Math.max(0, Math.min(by1, p.y0 + p.h) - Math.max(by0, p.y0)); if (!ix || !iy) continue;
+          if (ix * iy > 0.8 * p.w * p.h) remove.push(p.id); // élément presque entièrement dans la zone : retiré
+          else { const g = ctx2d(p.canvas); g.save(); g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000'; g.fillRect(bx0 - ex - p.x0, by0 - ey - p.y0, bx1 - bx0 + 2 * ex, by1 - by0 + 2 * ey); g.restore(); }
+          labels.push(f.what); }
       }
       return { ok: true, remove, labels };
     } catch (e) { return { ok: false, err: e.message }; }
@@ -4414,10 +4424,13 @@ const Board = {
       const n = I ? I.length / 3 : P.length / 9;
       for (let f = 0; f < n; f++) {
         const ids = I ? [I[f * 3], I[f * 3 + 1], I[f * 3 + 2]] : [f * 3, f * 3 + 1, f * 3 + 2];
+        if (kind === 'ink') { const uu = ids.map(v => U[v * 2]), vv = ids.map(v => U[v * 2 + 1]); if (Math.max(...uu) < 0 || Math.min(...uu) > 1 || Math.max(...vv) < 0 || Math.min(...vv) > 1) continue; }
         const cs = ids.map(v => this.coords(B, P[v * 3], P[v * 3 + 1], P[v * 3 + 2]));
         if (cs.some(q => q.r > 0.13)) continue;
         const ph = cs.map(q => q.phi); const seam = Math.max(...ph) - Math.min(...ph) > Math.PI; if (seam) for (let k = 0; k < 3; k++) if (ph[k] < 0) ph[k] += 2 * Math.PI;
         const dst = cs.map((q, k) => this.toPx(B, ph[k], q.along));
+        const uu = ids.map(v => U[v * 2]), vv = ids.map(v => U[v * 2 + 1]);
+        if (Math.max(...uu) < 0 || Math.min(...uu) > 1 || Math.max(...vv) < 0 || Math.min(...vv) > 1) continue; // face hors de l'image du motif : rien à dessiner
         const src = ids.map(v => [U[v * 2] * iw, (1 - U[v * 2 + 1]) * ih]);
         for (const sh of seam ? [0, -B.bw] : [0]) drawTexturedTri(g, img, src, dst.map(([x, y]) => [x + sh, y])); // triangle à cheval sur la couture : dessiné des deux côtés
       }
@@ -4578,6 +4591,9 @@ async function placeBoardElement(B, el, meta) {
 }
 
 // ---- contrôles (empreinte réelle des calques posés, recalculée sur la planche)
+function overlapReports(B, t, masks) { // un seul rendu du calque pour plusieurs masques
+  const a = alphaOf(Board.render(B, [t], 'ink')); return masks.map(m => { const p = alphaOf(m); let over = 0, total = 0; for (let i = 0; i < a.length; i++) if (a[i] > 50) { total++; if (p[i]) over++; } return { over, total }; });
+}
 function overlapReport(B, additions, protect) {
   const a = alphaOf(Board.render(B, additions, 'ink')), p = alphaOf(protect); let over = 0, total = 0;
   for (let i = 0; i < a.length; i++) if (a[i] > 50) { total++; if (p[i]) over++; }
@@ -4884,45 +4900,51 @@ function torsoSpill(B, t, fix = null) {
   return ink ? bad / ink : 0;
 }
 
-// recopie d'un tatouage existant : corrélation normalisée de son empreinte sur la planche (entière et par moitiés)
-// avec chaque élément, à plusieurs échelles ; la fenêtre reconnue est effacée de l'élément (indicatif, pas infaillible)
-function removeCopies(B, parts, existing, thr = 0.7, dbg = null) {
-  // gabarits : l'image source de chaque tatouage (droite, telle qu'une référence la montre) et son empreinte déroulée sur la planche
-  const K = 6, cm = 0.01 / B.mpp, temps = [];
+// recopie d'un tatouage existant : corrélation normalisée de sa forme (image source droite + empreinte déroulée,
+// entière et par moitiés, plusieurs échelles) sur la planche des ajouts réduite (1/8), sommes cumulées pour la vitesse,
+// budget de temps et pauses régulières (l'écran ne fige pas). La fenêtre reconnue est effacée. Indicatif, pas infaillible.
+async function removeCopies(B, parts, existing, thr = 0.7, dbg = null, budgetMs = 2500) {
+  const K = 6, MW = Math.round(BOARD_W / K), MH = BOARD_H / K, cm = 0.01 / B.mpp, t0 = performance.now(), removed = [];
+  const tick = () => new Promise(r => setTimeout(r, 0));
+  const small = (src, sx, sy, sw, sh, w, hh) => { w = Math.max(3, Math.round(w)); hh = Math.max(3, Math.round(hh));
+    let cur = src, cx = sx, cy = sy, cw = sw, ch = sh; // réduction par moitiés : un seul drawImage très réduit « saute » les traits fins
+    while (cw > w * 2.2 || ch > hh * 2.2) { const nw = Math.max(w, Math.round(cw / 2)), nh = Math.max(hh, Math.round(ch / 2)), t = newCanvas(nw, nh), tg = ctx2d(t); tg.imageSmoothingQuality = 'high'; tg.drawImage(cur, cx, cy, cw, ch, 0, 0, nw, nh); cur = t; cx = 0; cy = 0; cw = nw; ch = nh; }
+    const c = newCanvas(w, hh), g = ctx2d(c); g.imageSmoothingQuality = 'high'; g.drawImage(cur, cx, cy, cw, ch, 0, 0, w, hh);
+    const d = g.getImageData(0, 0, w, hh).data, v = new Float32Array(w * hh); for (let i = 0; i < v.length; i++) v[i] = d[i * 4 + 3] / 255 * (1 - (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 765 * 0.85); return { w, h: hh, v }; };
+  if (!parts.length || !existing.length) return removed;
+  const board = newCanvas(BOARD_W, BOARD_H), bg = ctx2d(board); for (const p of parts) bg.drawImage(p.canvas, p.x0, p.y0);
+  const M = small(board, 0, 0, BOARD_W, BOARD_H, MW, MH), W1 = M.w + 1;
+  const S1 = new Float64Array(W1 * (M.h + 1)), S2 = new Float64Array(W1 * (M.h + 1));
+  for (let y = 0; y < M.h; y++) { let a = 0, b = 0; for (let x = 0; x < M.w; x++) { const v = M.v[y * M.w + x]; a += v; b += v * v; S1[(y + 1) * W1 + x + 1] = S1[y * W1 + x + 1] + a; S2[(y + 1) * W1 + x + 1] = S2[y * W1 + x + 1] + b; } }
+  const box = (S, x, y, w, hh) => S[(y + hh) * W1 + x + w] - S[y * W1 + x + w] - S[(y + hh) * W1 + x] + S[y * W1 + x];
+  const temps = [];
   for (const { t, bm } of existing) {
     const tw = t.widthCm * cm, th = t.heightCm * cm;
-    if (bm) for (const [cy, ch] of [[0, 1], [0, 0.5], [0.5, 0.5], [0.25, 0.5]]) temps.push({ name: t.name, src: bm, sx: 0, sy: bm.height * cy, sw: bm.width, sh: bm.height * ch, ow: tw, oh: th * ch, thr: ch === 1 ? thr : thr + 0.12 });
+    if (bm) for (const [cy, ch] of [[0, 1], [0, 0.5], [0.5, 0.5]]) temps.push({ name: t.name, src: bm, sx: 0, sy: bm.height * cy, sw: bm.width, sh: bm.height * ch, ow: tw, oh: th * ch, thr: ch === 1 ? thr : thr + 0.12 });
     const c = Board.render(B, [t], 'ink'), a = alphaOf(c); let x0 = BOARD_W, y0 = BOARD_H, x1 = -1, y1 = -1;
-    for (let i = 0; i < a.length; i++) if (a[i] > 30) { const x = i % BOARD_W, y = (i / BOARD_W) | 0; if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
-    if (x1 >= 0) { const w = x1 - x0 + 1, hh = y1 - y0 + 1; for (const [cy, ch] of [[0, 1], [0, 0.5], [0.5, 0.5]]) temps.push({ name: t.name, src: c, sx: x0, sy: y0 + hh * cy, sw: w, sh: hh * ch, ow: w, oh: hh * ch, thr: ch === 1 ? thr : thr + 0.12 }); }
+    for (let i = 0; i < a.length; i += 2) if (a[i] > 30) { const x = i % BOARD_W, y = (i / BOARD_W) | 0; if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+    if (x1 >= 0) temps.push({ name: t.name, src: c, sx: x0, sy: y0, sw: x1 - x0 + 1, sh: y1 - y0 + 1, ow: x1 - x0 + 1, oh: y1 - y0 + 1, thr });
   }
-  // carte d'encre réduite : alpha × obscurité (une image source sans transparence compte par son trait sombre)
-  const small = (src, sx, sy, sw, sh, w, hh) => { w = Math.max(3, Math.round(w)); hh = Math.max(3, Math.round(hh));
-    // réduction par moitiés successives : un seul drawImage très réduit « saute » les traits fins (crénelage)
-    let cur = src, cx = sx, cy = sy, cw = sw, ch = sh;
-    while (cw > w * 2.2 || ch > hh * 2.2) { const nw = Math.max(w, Math.round(cw / 2)), nh = Math.max(hh, Math.round(ch / 2)), t = newCanvas(nw, nh), tg = ctx2d(t); tg.imageSmoothingQuality = 'high'; tg.drawImage(cur, cx, cy, cw, ch, 0, 0, nw, nh); cur = t; cx = 0; cy = 0; cw = nw; ch = nh; }
-    const c = newCanvas(w, hh), g = ctx2d(c); g.imageSmoothingQuality = 'high'; g.drawImage(cur, cx, cy, cw, ch, 0, 0, w, hh); const d = g.getImageData(0, 0, w, hh).data, v = new Float32Array(w * hh); for (let i = 0; i < v.length; i++) v[i] = d[i * 4 + 3] / 255 * (1 - (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 765 * 0.85); return { w, h: hh, v }; };
-  const removed = [];
-  for (const p of parts) {
-    const P0 = small(p.canvas, 0, 0, p.w, p.h, p.w / K, p.h / K), pad = Math.ceil(Math.max(P0.w, P0.h) * 0.3); // marge : une copie peut remplir tout l'élément
-    const P = { w: P0.w + 2 * pad, h: P0.h + 2 * pad, v: new Float32Array((P0.w + 2 * pad) * (P0.h + 2 * pad)) };
-    for (let y = 0; y < P0.h; y++) for (let x = 0; x < P0.w; x++) P.v[(y + pad) * P.w + x + pad] = P0.v[y * P0.w + x];
+  const hitsFound = [];
+  for (const T0 of temps) for (const sc of [0.7, 0.78, 0.86, 0.95, 1.05, 1.17, 1.3]) {
+    if (performance.now() - t0 > budgetMs) { if (dbg) dbg.push({ budget: true }); break; }
+    await tick();
+    const T = small(T0.src, T0.sx, T0.sy, T0.sw, T0.sh, T0.ow * sc / K, T0.oh * sc / K); const n = T.w * T.h; if (T.w >= M.w || T.h >= M.h || n < 60) continue;
+    let m = 0; for (const x of T.v) m += x; m /= n; let sd = 0; const tz = new Float32Array(n); for (let i = 0; i < n; i++) { tz[i] = T.v[i] - m; sd += tz[i] * tz[i]; } sd = Math.sqrt(sd); if (sd < 1e-3) continue;
+    const ncc = (ox, oy) => { const s1 = box(S1, ox, oy, T.w, T.h), s2 = box(S2, ox, oy, T.w, T.h), pm = s1 / n, pv = s2 - s1 * pm; if (pm < 0.03 || pv < 1e-4) return -1;
+      let num = 0; for (let y = 0; y < T.h; y++) { const r = (oy + y) * M.w + ox, q = y * T.w; for (let x = 0; x < T.w; x++) num += M.v[r + x] * tz[q + x]; } return num / (sd * Math.sqrt(pv)); };
     let best = null;
-    for (const T0 of temps) for (const s of [0.6, 0.72, 0.85, 1, 1.15, 1.3, 1.5]) {
-      const T = small(T0.src, T0.sx, T0.sy, T0.sw, T0.sh, T0.ow * s / K, T0.oh * s / K); if (T.w > P.w || T.h > P.h || T.w * T.h < 90) continue;
-      let m = 0; for (const x of T.v) m += x; m /= T.v.length; let sd = 0; const tz = T.v.map(x => { sd += (x - m) ** 2; return x - m; }); sd = Math.sqrt(sd); if (sd < 1e-3) continue;
-      for (let oy = 0; oy + T.h <= P.h; oy += 1) for (let ox = 0; ox + T.w <= P.w; ox += 1) {
-        let pm = 0; for (let y = 0; y < T.h; y++) for (let x = 0; x < T.w; x++) pm += P.v[(oy + y) * P.w + ox + x]; pm /= T.v.length; if (pm < 0.04) continue;
-        let num = 0, ps = 0; for (let y = 0; y < T.h; y++) for (let x = 0; x < T.w; x++) { const q = P.v[(oy + y) * P.w + ox + x] - pm; num += q * tz[y * T.w + x]; ps += q * q; }
-        const ncc = num / (sd * Math.sqrt(ps) + 1e-6); if (!best || ncc - T0.thr > best.ncc - best.thr) best = { ncc, thr: T0.thr, ox, oy, w: T.w, h: T.h, name: T0.name };
-      }
-    }
-    if (dbg) dbg.push(best && { part: p.id, ncc: +best.ncc.toFixed(3), thr: best.thr, w: best.w, h: best.h, name: best.name });
-    if (best && best.ncc > best.thr) {
-      const g = ctx2d(p.canvas); g.save(); g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000';
-      g.fillRect((best.ox - pad - best.w * 0.15) * K, (best.oy - pad - best.h * 0.15) * K, best.w * K * 1.3, best.h * K * 1.3); g.restore();
-      removed.push({ part: p.id, name: best.name, ncc: +best.ncc.toFixed(2) });
-    }
+    for (let oy = 0; oy + T.h <= M.h; oy += 2) for (let ox = 0; ox + T.w <= M.w; ox += 2) { const v = ncc(ox, oy); if (!best || v > best.v) best = { v, ox, oy }; }
+    if (!best) continue;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const ox = best.ox + dx, oy = best.oy + dy; if (ox < 0 || oy < 0 || ox + T.w > M.w || oy + T.h > M.h) continue; const v = ncc(ox, oy); if (v > best.v) best = { v, ox, oy }; }
+    if (dbg) dbg.push({ name: T0.name, sc, ncc: +best.v.toFixed(3), thr: T0.thr });
+    if (best.v > T0.thr) hitsFound.push({ x: best.ox * K, y: best.oy * K, w: T.w * K, h: T.h * K, name: T0.name, ncc: best.v });
+  }
+  for (const hh of hitsFound) { // effacement de la fenêtre reconnue (+15 %) dans les éléments concernés
+    const ex = hh.w * 0.15, ey = hh.h * 0.15;
+    for (const p of parts) { if (hh.x - ex > p.x0 + p.w || hh.x + hh.w + ex < p.x0 || hh.y - ey > p.y0 + p.h || hh.y + hh.h + ey < p.y0) continue;
+      const g = ctx2d(p.canvas); g.save(); g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000'; g.fillRect(hh.x - ex - p.x0, hh.y - ey - p.y0, hh.w + 2 * ex, hh.h + 2 * ey); g.restore(); }
+    removed.push({ name: hh.name, ncc: +hh.ncc.toFixed(2) });
   }
   return removed;
 }

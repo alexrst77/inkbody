@@ -94,21 +94,16 @@ async def main():
              shoulderH: (()=>{ const ps=P.parts.filter(p=>P.ctx.P.zones[p.zone] && P.ctx.P.zones[p.zone].key==='epaule'); if(!ps.length) return null; const m=ps.sort((a,b)=>b.w*b.h-a.w*a.h)[0]; return Math.max(m.w,m.h)*P.ctx.B.mpp*100; })(), disc:P.ctx.P.disc && P.ctx.P.disc.dCm, ids:[...new Set(add.map(t=>t.imageId))].length, torso:add.map(t=>InkBody.__torso? 0:0)}; }""")
         print(json.dumps({k:v for k,v in r.items() if k!='forb'},ensure_ascii=False)); print('forb',r['forb'])
         if sys.argv[1:]==['vis']:
-            check('Contrôle visuel : élément signalé retiré', not any('Tournesol' in n for n in r['names']) and any('chess king' in w for w in r['why']), (r['names'], r['why'])); print('RÉSUMÉ', sum(res),'/',len(res)); await b.close(); return
+            check('Contrôle visuel : zone signalée effacée', any('chess king' in w for w in r['why']), (r['names'], r['why'])); print('RÉSUMÉ', sum(res),'/',len(res)); await b.close(); return
         check('Ajouts posés (calques par zone)', r['n']>=2, r['names'])
         check('Aucun ajout sur l’encre existante', all(o==0 for o in r['core']))
         check('Rien hors zones autorisées (torse, marge, main)', all(o['over']<=max(30,o['total']*0.03) for o in r['forb']), [o['over'] for o in r['forb']])
         check('Tournesol ramené à la taille calculée', r['shoulderH'] is not None and r['shoulderH']<=r['disc']*1.15, (r['shoulderH'], r['disc']))
-        dbg=await pg.evaluate("""async () => { const {AI,Board,extractParts,removeCopies,S}=InkBody; const P=AI.preview; const img=await new Promise(r=>{const i=new Image(); i.onload=()=>r(i); i.src=P.raw;});
-           const ex=extractParts(P.ctx.B,P.ctx.M,P.ctx.P,img,{}); const exist=[]; for (const t of Board.tattoosOn(P.ctx.B).filter(t=>!t.pending)) exist.push({t, bm: await InkBody.Images.bitmap(t.imageId)});
-           return {parts:ex.parts.map(p=>[p.x0,p.y0,p.w,p.h,p.n]), exist:exist.map(e=>e.t.name), rm:(()=>{const d=[]; removeCopies(P.ctx.B,ex.parts,exist,0.7,d); return d;})()}; }""")
-        print('DBG', dbg, 'spot', G.get('spot'))
         bu=await pg.evaluate("() => InkBody.AI.preview.boardUrl"); im=du(bu); bgc=Image.new('RGBA',im.size,(230,200,180,255)); bgc.alpha_composite(im); bgc.convert('RGB').save('t40_board.png')
-        imgs=await pg.evaluate("""async () => { const {AI,extractParts,S,Images}=InkBody; const P=AI.preview; const img=await new Promise(r=>{const i=new Image(); i.onload=()=>r(i); i.src=P.raw;});
-           const ex=extractParts(P.ctx.B,P.ctx.M,P.ctx.P,img,{}); const p=ex.parts[1]; const c=document.createElement('canvas'); c.width=p.w; c.height=p.h; const g=c.getContext('2d'); g.fillStyle='#fff'; g.fillRect(0,0,p.w,p.h); g.drawImage(p.canvas,0,0);
-           const t=S.tattoos.find(t=>t.name.startsWith('Mandala')); const bm=await Images.bitmap(t.imageId); const c2=document.createElement('canvas'); c2.width=bm.width; c2.height=bm.height; const g2=c2.getContext('2d'); g2.fillStyle='#f0f'; g2.fillRect(0,0,bm.width,bm.height); g2.drawImage(bm,0,0);
-           return [c.toDataURL(), c2.toDataURL(), t.widthCm, t.heightCm, bm.width, bm.height]; }""")
-        du(imgs[0]).save('/tmp/part1.png'); du(imgs[1]).save('/tmp/mand.png'); print('mand', imgs[2:])
+        dd=await pg.evaluate("""async () => { const {AI,Board,extractParts,removeCopies,Images}=InkBody; const P=AI.preview; const img=await new Promise(r=>{const i=new Image(); i.onload=()=>r(i); i.src=P.raw;});
+           const ex=extractParts(P.ctx.B,P.ctx.M,P.ctx.P,img,{}); const exist=[]; for (const t of Board.tattoosOn(P.ctx.B).filter(t=>!t.pending)) exist.push({t, bm: await Images.bitmap(t.imageId)});
+           const d=[]; await removeCopies(P.ctx.B,ex.parts,exist,0.7,d,20000); return d; }""")
+        print('DD', sorted([x for x in dd if 'ncc' in x], key=lambda x:-x['ncc'])[:6])
         check('Copie du mandala existant effacée', any('recopie' in w for w in r['why']), r['why'])
         check('Damier retiré', any('damier' in w for w in r['why']))
         check('Noirs pleins allégés (encre moyenne ≤ 0,62, < 25 % de noir plein)', r['meanA']<=0.63 and r['full']<0.25, (round(r['meanA'],2), round(r['full'],2)))
