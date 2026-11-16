@@ -18,6 +18,8 @@ if(!Object.hasOwn)Object.hasOwn=function(o,k){return Object.prototype.hasOwnProp
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="assets/icons/icon-180.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="format-detection" content="telephone=no">
 <meta name="apple-mobile-web-app-title" content="InkBody">
 <style>
 :root{
@@ -249,6 +251,27 @@ table.lst tr.cur td{background:var(--accbg)}
   .ed-side{max-height:none;order:0;border-top:none;border-right:1px solid var(--line)}
   #toasts{top:calc(var(--top) + var(--safet) + 70px)}
 }
+/* ---- iPhone / téléphones : vue 3D maximale, panneaux courts, notifications discrètes en bas */
+@media (max-width:699px){
+  :root{--bb:calc(58px + var(--safeb))}
+  #bottombar{padding:4px 2px var(--safeb)}
+  #bottombar button{font-size:10px;min-height:48px;margin:0 1px}
+  #bottombar button svg{width:21px;height:21px}
+  .panel{max-height:66vh}
+  .panel.min{max-height:42vh}
+  .panel .sheet-handle{min-height:34px;touch-action:none}
+  #viewbar{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  #viewbar::-webkit-scrollbar{display:none}
+  #viewbar .grp{flex:0 0 auto}
+  #toasts{bottom:auto!important;top:calc(var(--top) + var(--safet) + 52px)!important;width:94vw}
+  .toast{font-size:12.5px;padding:8px 12px;border-radius:9px}
+  body.sheet-open #disclaimer{display:none}
+  .modal .mbody{padding:12px}
+  .btn{min-height:40px}
+  .btn.sm{min-height:34px}
+}
+html,body,button,.btn,#bottombar{touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+button,.btn,#bottombar,.seg{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 @media (pointer:coarse){input.inp,textarea.inp,select.inp{font-size:16px}}
 </style>
 
@@ -345,7 +368,8 @@ const PROJECT_VERSION = 1;
 const EXPORT_FORMAT = 'inkbody-export';
 const MAX_FILE_MB = 25;            // limite d'import par fichier image
 const MAX_WORK_PX = 2048;          // taille de travail max des motifs (l'original est conservé)
-const MAX_TEX_PX = 2048;           // taille max des textures GPU
+const IS_PHONE = typeof matchMedia !== 'undefined' && matchMedia('(max-width:699px)').matches;
+const MAX_TEX_PX = IS_PHONE ? 1536 : 2048; // taille max des textures GPU (mémoire réduite sur iPhone)
 const MAX_MODEL_MB = 40;           // limite d'import GLB
 const IS_TOUCH = matchMedia('(pointer:coarse)').matches;
 const isMobile = () => matchMedia('(max-width:1100px)').matches; // téléphone ou tablette en portrait : 3D plein écran + panneaux repliables
@@ -380,6 +404,7 @@ function slug(s) { return (s || 'projet').normalize('NFD').replace(/[̀-ͯ]/g, '
 
 function toast(msg, type = '', ms = 3200) {
   const t = h('div', { class: 'toast ' + type }, msg);
+  if (matchMedia('(max-width:699px)').matches) { $$('#toasts .toast').forEach(n => n.remove()); ms = Math.min(ms, type === 'err' ? 5000 : 3000); } // iPhone : un seul message, en bas, bref
   $('#toasts').append(t);
   setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; setTimeout(() => t.remove(), 320); }, ms);
 }
@@ -642,7 +667,7 @@ const Engine = {
     catch (e) { throw new Error('WEBGL'); }
     if (!renderer.getContext()) throw new Error('WEBGL');
     this.renderer = renderer;
-    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, isMobile() ? 1.75 : 2));
+    renderer.setPixelRatio(Math.min(devicePixelRatio || 1, IS_PHONE ? 1.5 : isMobile() ? 1.75 : 2)); // iPhone : écran Retina 3x rendu à 1,5x (fluide, batterie)
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.NeutralToneMapping; renderer.toneMappingExposure = 0.98;
     const scene = this.scene = new THREE.Scene();
@@ -2317,9 +2342,10 @@ const UI = {
     if (!isMobile()) return;
     for (const id of ['left', 'right']) { const el = $('#' + id); el.classList.toggle('open', id === which); el.classList.toggle('min', id === which && compact); }
     $$('#bottombar [data-bb]').forEach(b => b.classList.toggle('on', b.dataset.bb === which));
+    document.body.classList.add('sheet-open');
     this.syncInset();
   },
-  closeSheets() { $('#left').classList.remove('open'); $('#right').classList.remove('open'); $$('#bottombar [data-bb]').forEach(b => b.classList.remove('on')); this.syncInset(); },
+  closeSheets() { document.body.classList.remove('sheet-open'); $('#left').classList.remove('open'); $('#right').classList.remove('open'); $$('#bottombar [data-bb]').forEach(b => b.classList.remove('on')); this.syncInset(); },
   syncInset() {
     const el = $('#left.open') || $('#right.open');
     $('#hint').style.visibility = isMobile() && el && !isTablet() ? 'hidden' : '';
@@ -2397,7 +2423,7 @@ const UI = {
   },
   flyToTattoo(t) {
     const s = Body.resolve(t.anchor); if (!s) return;
-    const d = clamp(Math.max(t.widthCm, t.heightCm) / 100 * 3.2, 0.45, 1.6);
+    const d = clamp(Math.max(t.widthCm, t.heightCm) / 100 * (IS_PHONE ? 4.2 : 3.2), IS_PHONE ? 0.65 : 0.45, 1.8); // iPhone : un peu plus de recul (écran étroit)
     Engine.flyTo(s.p, s.p.clone().addScaledVector(s.n, d));
   },
   // ---------------- panneau droit
@@ -4129,7 +4155,14 @@ function wireUI() {
   $$('[data-ltab]').forEach(b => b.onclick = () => UI.setLTab(b.dataset.ltab));
   $$('[data-rtab]').forEach(b => b.onclick = () => UI.setRTab(b.dataset.rtab));
   $$('[data-close]').forEach(b => b.onclick = () => UI.closeSheets());
-  $$('.sheet-handle').forEach(hd => hd.addEventListener('click', (e) => { if (e.target.closest('button')) return; const p = hd.parentElement; p.classList.toggle('min'); UI.syncInset(); }));
+  $$('.sheet-handle').forEach(hd => {
+    hd.addEventListener('click', (e) => { if (e.target.closest('button') || hd._swiped) return; const p = hd.parentElement; p.classList.toggle('min'); UI.syncInset(); });
+    // glisser la poignée : vers le bas = réduire puis fermer, vers le haut = agrandir
+    let y0 = null; hd.addEventListener('pointerdown', (e) => { if (e.target.closest('button')) return; y0 = e.clientY; hd._swiped = false; });
+    hd.addEventListener('pointerup', (e) => { if (y0 == null) return; const dy = e.clientY - y0; y0 = null; const p = hd.parentElement;
+      if (dy > 45) { hd._swiped = true; if (p.classList.contains('min')) UI.closeSheets(); else { p.classList.add('min'); UI.syncInset(); } }
+      else if (dy < -45) { hd._swiped = true; p.classList.remove('min'); UI.syncInset(); } });
+  });
   addEventListener('resize', debounce(() => UI.syncInset(), 150));
   $$('[data-view]').forEach(b => b.onclick = () => Engine.setView(b.dataset.view));
   $$('[data-mode]').forEach(b => b.onclick = () => { setMode(b.dataset.mode); if (b.dataset.mode !== 'orbit') UI.closeSheets(); });
