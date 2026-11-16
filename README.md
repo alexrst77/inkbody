@@ -91,3 +91,20 @@ Nouveau flux (`src/07-board.js`) :
 5. **Retouche** d'un ajout seul ; réponse tardive ignorée si le projet a changé ; exports transparent et fond blanc.
 
 Tests : `t32` (bureau, existants verrouillés) et `t34` (iPad, calques non marqués), modèle simulé qui modifie volontairement l'existant.
+
+## Ajouts IA v3.8 : composition planifiée et contrôlée
+
+Causes du défaut « tournesol géant + roi et damier en double » :
+- le serveur demandait au modèle de « réutiliser les motifs des images de référence » : il recopiait donc le roi et le damier présents dans les références ;
+- un repli « tolérant » gardait tout ce qui était dessiné hors des zones protégées, y compris ces copies ;
+- la taille du motif principal et le haut de la planche (qui retombe sur le torse) n'étaient pas contrôlés ;
+- l'encre du modèle était posée telle quelle (aplats noirs).
+
+Fonctionnement :
+- **Plan de composition** calculé sur la peau réelle et vos calques avant tout appel : disque du motif principal sur le deltoïde (taille max en cm), côtés du bras, raccord du coude, début de l'avant-bras ; torse, cou, aisselle et main exclus.
+- **Image guide** envoyée au modèle : bleu uni = interdit, blanc = autorisé, jaune = motif principal. Aucune image de vos tatouages n'est envoyée. Le masque OpenAI correspond aux zones autorisées. Les références éventuelles ne servent qu'au style (« ne jamais copier leurs sujets »), et la liste « Ne jamais dessiner » est transmise.
+- **Extraction stricte** : rien hors zones autorisées (bord adouci) ; le motif principal est ramené à la taille calculée ; un élément trop grand pour sa zone est réduit plutôt que coupé ; damier retiré ; recopie d'un tatouage existant recherchée par corrélation de forme et effacée ; aplats noirs allégés en ombrage, ton aligné sur les existants ; encre neutre noir et gris.
+- **Contrôle visuel facultatif** (`/api/ai/check`, modèle `OPENAI_VISION_MODEL` ou gpt-5-mini / gpt-4.1-mini / gpt-4o-mini) : seule l'image des ajouts est envoyée ; les éléments signalés sont retirés. Indicatif, pas infaillible.
+- **Pose** : un calque transparent par zone (motif principal, feuillage, coude, avant-bras), ajustable sans régénérer. Contrôle 3D : l'encre qui tomberait sur le torse est effacée du calque, sinon le calque est écarté.
+- **Avant « Garder »** : existants identiques (données + empreinte SHA-256 des images), pas de doublon, zones et torse vérifiés sur l'empreinte posée. « Autre version » remplace la proposition, « Annuler » restaure l'état exact.
+- **Modèle** : `gpt-image-2.5-sunburst` (retouche précise avec masque), puis repli 2.5-flare, 2, 1.5, 1. Qualité `high` pour les ajouts (`IMAGE_QUALITY` pour changer). Aucun paramètre propre à un modèle n'est envoyé. Les poids du modèle ne sont pas modifiés : seul le fonctionnement de l'app change.

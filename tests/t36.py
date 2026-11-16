@@ -16,6 +16,15 @@ def fake(body):
     keep=Image.new('L',(W,H),0); 
     for y in range(0,H,40):
         if random.random()<0.6: keep.paste(255,(0,y,W,y+40))
+    # le modèle respecte le masque en gros : son dessin ne déborde que de quelques mm hors du blanc
+    from PIL import ImageFilter as F
+    allow=Image.eval(board.split()[2], lambda v: 0).convert('L'); bp=board.load(); ap=allow.load()
+    for y in range(0,H):
+        for x in range(0,W):
+            r_,g_,b_=bp[x,y]
+            if not (b_>r_+20): ap[x,y]=255
+    allow=allow.filter(F.MaxFilter(9))
+    out=Image.composite(out, Image.new('RGB',(W,H),(244,238,226)), allow)
     m=ImageChops.multiply(occ,keep); out.paste((186,213,255),mask=m)
     noise=Image.effect_noise((W,H),8).convert('RGB'); out=ImageChops.add(out,noise,1,-8)
     buf=io.BytesIO(); out.save(buf,'PNG'); out.save('fake_out.png'); return 'data:image/png;base64,'+base64.b64encode(buf.getvalue()).decode()
@@ -27,6 +36,7 @@ async def main():
         pg.on('pageerror',lambda e: errs.append(str(e)))
         async def route(r):
             if r.request.url.endswith('/health'): return await r.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'ready':True,'model':'mock'}))
+            if r.request.url.endswith('/check'): return await r.fulfill(status=200,content_type='application/json',body=json.dumps({'found':[]}))
             body=json.loads(r.request.post_data); i=fake(body); await r.fulfill(status=200,content_type='application/json',body=json.dumps({'images':[i]}))
         await ctx.route('**/api/ai/**',route)
         await pg.goto(URL); await pg.wait_for_function('window.InkBody && InkBody.S.project && InkBody.Body.nV>0',timeout=120000)

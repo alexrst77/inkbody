@@ -40,6 +40,7 @@ async def main():
         async def route(r):
             u=r.request.url
             if u.endswith('/health'): return await r.fulfill(status=200,content_type='application/json',body=json.dumps({'ok':True,'ready':True,'model':'mock'}))
+            if u.endswith('/check'): return await r.fulfill(status=200,content_type='application/json',body=json.dumps({'found':[]}))
             body=json.loads(r.request.post_data); calls.append(body)
             i1,n=fake_model(body,0); i2,_=fake_model(body,1)
             if delay['s']: await asyncio.sleep(delay['s'])

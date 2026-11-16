@@ -3866,7 +3866,7 @@ const AI = {
     if (!this.st) {
       const side = 'r';
       this.st = { mode: this.armHasTattoos(side) ? 'ajouts' : 'manchette', side, prompt: '', style: 'réaliste noir et gris', refs: new Set(), results: [], auto: true, placed: null,
-        marginCm: 0.5, gaps: false, includeHand: false, edits: null, brush: 'protect', targets: null };
+        marginCm: 0.8, gaps: false, includeHand: false, edits: null, brush: 'protect', targets: null, main: null, forbid: null, zonesOff: [] };
     }
     if (preset) Object.assign(this.st, preset);
     const saved = localStorage.getItem('inkbody.ai.prompt.' + this.st.mode); if (!this.st.prompt && saved) this.st.prompt = saved;
@@ -3916,6 +3916,7 @@ const AI = {
       form.append(ta, h('div', { class: 'row', style: { marginTop: '6px', flexWrap: 'wrap' } }, paste, kbBtn(ta, (v) => { st.prompt = v.slice(0, 1500); this.savePrompt(st); }, '⌨ Clavier'),
         h('button', { type: 'button', class: 'btn sm ghost', onclick: () => { st.prompt = ''; ta.value = ''; this.savePrompt(st); } }, 'Effacer'),
         h('select', { class: 'inp', style: { flex: 1, minWidth: '160px' }, onchange: (e) => st.style = e.target.value }, styles.map(x => h('option', { selected: x === st.style }, x)))));
+      if (st.mode === 'ajouts') this.drawPlan(form, st);
       // code d'accès : seulement s'il manque
       const codeIn = h('input', { class: 'inp', type: 'password', autocomplete: 'off', style: { fontSize: '16px' }, placeholder: 'Code d’accès (ACCESS_CODE)', value: this.accessCode, oninput: (e) => this.accessCode = e.target.value });
       const codeRow = h('div', { class: 'field', style: { marginTop: '10px' } }, h('span', {}, 'Code d’accès (retenu sur cet appareil)'), h('div', { class: 'row' }, codeIn, kbBtn(codeIn, (v) => this.accessCode = v.trim(), '⌨')));
@@ -3936,6 +3937,47 @@ const AI = {
       if ((st.mode === 'motif' || st.mode === 'manchette') && st.results.length) this.drawResults(form, st, m);
     };
     draw();
+  },
+  guessMain(prompt) {
+    const m = /([\p{L}’' -]{2,40}?)\s+(?:sur|à|a|au niveau de)\s+l[’']?\s?[ée]paule/iu.exec(prompt || ''); if (!m) return '';
+    return m[1].replace(/^(un|une|des|le|la|les|gros|grosse|grand|grande|beau|belle|petit|petite)\s+/gi, '').replace(/^(un|une|des|le|la|les|gros|grosse|grand|grande)\s+/gi, '').trim().split(/\s+/).slice(-3).join(' ');
+  },
+  defaultForbid(B) {
+    const names = Board.tattoosOn(B).map(t => t.name.replace(/\(.*?\)/g, '').replace(/^(Ajout IA|Ajouts IA).*$/i, '').trim()).filter(Boolean);
+    return [...new Set(names)].join(', ');
+  },
+  computePlan(st) {
+    const B = Board.frame(st.side); if (!B) return null;
+    const list = Board.tattoosOn(B);
+    const M = Board.masks(B, { marginCm: st.marginCm, gaps: st.gaps, includeHand: st.includeHand, edits: st.edits, protectList: list });
+    const P = Board.plan(B, M, { main: (st.main || '').trim(), includeHand: st.includeHand, off: st.zonesOff });
+    st._B = B; st._M = M; st._P = P; return P;
+  },
+  // plan de composition : zones libres et dimensions calculées depuis la peau et vos calques (avant tout appel à l'IA)
+  drawPlan(form, st) {
+    const B = Board.frame(st.side); if (!B) return;
+    if (st.main == null) st.main = this.guessMain(st.prompt);
+    if (st.forbid == null) st.forbid = this.defaultForbid(B);
+    const box = h('div', { class: 'sec', style: { marginTop: '10px' } }, h('h4', {}, 'Plan de composition (calculé sur votre bras)'));
+    const info = h('div', { class: 'muted', style: { fontSize: '12.5px' } }, 'calcul…');
+    const view = newCanvas(BOARD_W / 6, BOARD_H / 6); view.style.cssText = 'width:120px;height:180px;border-radius:8px;flex:0 0 auto;background:#fff';
+    const zl = h('div', { style: { flex: 1, minWidth: 0 } });
+    const upd = () => setTimeout(() => {
+      const P = this.computePlan(st); if (!P) return;
+      const io = Board.guideInputs(st._B, P), g = ctx2d(view); g.drawImage(io.image, 0, 0, view.width, view.height); g.globalAlpha = 0.85; g.drawImage(st._M.ink, 0, 0, view.width, view.height); g.globalAlpha = 1;
+      zl.innerHTML = '';
+      if (st.main) zl.append(h('div', {}, P.disc ? '◉ ' + cap(st.main) + ' : ' + P.disc.dCm + ' cm max (deltoïde, au-dessus des existants)' : '⚠ Pas assez de place libre sur l’épaule pour « ' + st.main + ' » : il sera traité comme ornement.'));
+      for (const z of P.zones) zl.append(h('label', { class: 'chk', style: { margin: '2px 0' } }, h('input', { type: 'checkbox', checked: z.on, onchange: (e) => { st.zonesOff = e.target.checked ? st.zonesOff.filter(k => k !== z.key) : [...st.zonesOff, z.key]; upd(); } }), z.label + ' · ' + z.areaCm2 + ' cm²'));
+      info.textContent = 'Jaune = motif principal (taille max), blanc = zones autorisées, bleu = interdit (vos tatouages + marge, torse, main). L’IA ne peut rien poser ailleurs.';
+    }, 20);
+    const mainIn = h('input', { class: 'inp', style: { fontSize: '16px' }, placeholder: 'Motif principal à l’épaule (ex. tournesol) — vide = aucun', value: st.main, onchange: (e) => { st.main = e.target.value.slice(0, 50); upd(); } });
+    const forbIn = h('input', { class: 'inp', style: { fontSize: '16px' }, placeholder: 'Ne jamais dessiner (ex. roi, damier, croix)', value: st.forbid, onchange: (e) => st.forbid = e.target.value.slice(0, 250) });
+    mainIn.style.flex = forbIn.style.flex = '1'; mainIn.style.minWidth = forbIn.style.minWidth = '0';
+    const line = (lab, inp, kb) => h('div', { class: 'field', style: { marginTop: '6px' } }, h('span', {}, lab), h('div', { class: 'row', style: { flexWrap: 'nowrap' } }, inp, kb));
+    box.append(line('Motif principal à l’épaule', mainIn, kbBtn(mainIn, (v) => { st.main = v.slice(0, 50); upd(); }, '⌨')),
+      line('Ne jamais dessiner (vos motifs déjà tatoués)', forbIn, kbBtn(forbIn, (v) => st.forbid = v.slice(0, 250), '⌨')),
+      h('div', { class: 'row', style: { marginTop: '8px', alignItems: 'flex-start', gap: '10px' } }, view, zl), info);
+    form.append(box); upd();
   },
   // ---- aperçu et correction du masque de protection (calculé depuis les calques réels du projet)
   drawMaskSection(form, st) {
@@ -4010,12 +4052,17 @@ const AI = {
     for (const id of st.refs) { const l = S.lib(id); if (!l) continue; const c = imageToCanvas(await Images.bitmap(l.imageId), 1024); const u = c.toDataURL('image/png'); send.references.push(u); previews.push([l.name + ' (style)', u]); }
     let ctx = null;
     if (st.mode === 'ajouts' || st.mode === 'retouche') {
+      if (st.mode === 'ajouts') this.computePlan(st);
       const B = st._B || Board.frame(st.side), M = st._M; if (!B || !M) return toast('Planche du bras indisponible.', 'err');
-      const io = Board.modelInputs(B, M);
+      const P = st.mode === 'ajouts' ? st._P : Board.planFromMask(B, M, st.includeHand);
+      if (!P.zones.some(z => z.on)) return toast('Aucune zone autorisée : cochez au moins une zone du plan.', 'err');
+      const io = Board.guideInputs(B, P);
+      send.plan = { main: P.disc ? st.main : '', mainCm: P.disc ? P.disc.dCm : 0, zones: P.zones.filter(z => z.on).map(z => ({ key: z.key, label: z.label, wCm: z.wCm, hCm: z.hCm })) };
+      send.forbidden = (st.forbid || '').slice(0, 250);
       send.zoneImage = io.image.toDataURL('image/png'); send.mask = io.mask.toDataURL('image/png');
       if (st.mode === 'retouche') send.prompt = 'Modify ONLY the elements inside the editable area: ' + send.prompt;
-      previews.unshift(['Planche du bras (vos calques réels)', send.zoneImage], ['Masque : noir = protégé', send.mask]);
-      ctx = { B, M, side: st.side, mode: st.mode, targets: (st.targets || []).slice(), targetsSnap: JSON.stringify(S.tattoos.filter(t => (st.targets || []).includes(t.id))) };
+      previews.unshift(['Planche guide (aucune image de vos tatouages)', send.zoneImage], ['Masque : noir = interdit', send.mask]);
+      ctx = { B, M, P, send, side: st.side, mode: st.mode, targets: (st.targets || []).slice(), targetsSnap: JSON.stringify(S.tattoos.filter(t => (st.targets || []).includes(t.id))) };
     }
     if (!send.references.length || this.consentOk) return this.call(send, st, redraw, m, ctx); // la planche du bras n'est pas une photo : pas de confirmation
     let consent = false;
@@ -4067,71 +4114,133 @@ const AI = {
         actions: [{ label: 'Comparer avec l’avatar', onClick: () => { showAvatar = !showAvatar; pic.src = showAvatar ? img.toDataURL('image/png') : url; } }, { label: 'Télécharger', cls: 'primary', onClick: () => download(blob, 'inkbody-photo-realiste.png') }] });
     } catch (e) { busy.close(); toast('Photo impossible : ' + e.message, 'err', 8000); }
   },
-  // ---- ajouts : extraction, contrôle, pose en calques « aperçu » (jamais de modification des calques existants)
+  // ---- ajouts : extraction, corrections, contrôles, pose en calques « aperçu » (jamais de modification des calques existants)
   async applyAdditions(results, idx, st, ctx, m) {
     const busy = Busy.show('Extraction et contrôle des ajouts…');
     try {
       if (ctx.mode === 'retouche') { // les calques ciblés doivent être inchangés depuis l'envoi
         const now = JSON.stringify(S.tattoos.filter(t => ctx.targets.includes(t.id)));
-        if (now !== ctx.targetsSnap) { busy.close(); return toast('Les ajouts ciblés ont été modifiés entre-temps : résultat ignoré pour ne rien écraser.', 'warn', 7000); }
+        if (now !== ctx.targetsSnap && !(this.preview && this.preview.ctx === ctx)) { busy.close(); return toast('Les ajouts ciblés ont été modifiés entre-temps : résultat ignoré pour ne rien écraser.', 'warn', 7000); }
       }
-      this.cancelPreview(true);
-      const snap = await lockedSnapshot(true, ctx.targets); // tous les calques déjà présents (hors ajouts ciblés par une retouche)
+      // « Autre version » : la proposition en cours est remplacée (état d'avant restauré à l'identique), jamais empilée
+      const before = this.preview ? this.preview.before : JSON.stringify(S.variant.tattoos);
+      if (this.preview) this.restoreBefore(this.preview); else History.record();
+      const snap = await lockedSnapshot(true, ctx.targets);
       const img = await blobToImage(results[idx].blob);
-      let ex = extractAdditions(ctx.B, ctx.M, img, { split: !!st.split }), lenient = false;
-      if (!ex.kept.length) { ex = extractAdditions(ctx.B, ctx.M, img, { split: !!st.split, lenient: true }); lenient = true; } // repli : on garde tout ce qui est hors des zones protégées
-      const { kept, rejected, board } = ex;
-      const batch = uid('ia_');
-      History.record();
-      const placed = [], lost = [];
-      for (let k = 0; k < kept.length; k++) { const t = await placeBoardElement(ctx.B, kept[k], { name: kept.length > 1 ? 'Ajout IA ' + (k + 1) : 'Ajouts IA', batch, note: st.prompt.slice(0, 200) }); if (t) placed.push(t); else lost.push(kept[k]); }
-      // contrôle final sur l'empreinte réelle posée : tout calque qui empiète est retiré (le masque envoyé au modèle n'est pas une garantie)
+      // 1. extraction (zones autorisées strictes, réductions, damier, noirs allégés)
+      const ex = extractParts(ctx.B, ctx.M, ctx.P, img, { color: /aquarelle|couleur|color/i.test(st.style + ' ' + st.prompt) });
+      let parts = ex.parts; const why = ex.why.slice(), checks = [];
+      // 2. recopie d'un existant : forme de chaque tatouage du bras recherchée dans les ajouts, puis effacée (indicatif)
+      const exist = Board.tattoosOn(ctx.B).filter(t => !ctx.targets.includes(t.id) && !t.pending);
+      const exB = []; for (const t of exist) { let bm = null; try { bm = await Images.bitmap(t.imageId); } catch (e) { /* image absente */ } exB.push({ t, bm }); }
+      const copies = removeCopies(ctx.B, parts, exB);
+      if (copies.length) why.push('recopie de « ' + [...new Set(copies.map(c => c.name))].join(' », « ') + ' » effacée');
+      parts = parts.filter(p => imageOpaqueRatioCanvas(p.canvas) > 0);
+      // 3. contrôle visuel des motifs interdits (serveur ; seule l'image des ajouts est envoyée)
+      const vis = await this.visualCheck(ctx, parts, st);
+      if (vis.ok && vis.remove.length) { parts = parts.filter(p => !vis.remove.includes(p.id)); why.push('motif interdit détecté et retiré : ' + [...new Set(vis.labels)].join(', ')); }
+      checks.push(vis.ok ? ['✓', 'contrôle visuel des motifs interdits (indicatif)'] : ['–', 'contrôle visuel indisponible (' + vis.err + ')']);
+      if (ex.density > 0.68) why.push('composition très chargée (' + Math.round(ex.density * 100) + ' % de la zone)');
+      // 4. pose : un calque par zone (motif principal, feuillage, coude, avant-bras), transparence réelle
+      const layers = groupParts(ctx.P, parts, !!st.split, ex.mainId), batch = uid('ia_'), placed = [], lost = [];
+      for (const el of layers) { const t = await placeBoardElement(ctx.B, el, { name: el.name, batch, note: st.prompt.slice(0, 200) }); el._t = t; if (t) placed.push(t); else lost.push(el); }
+      // 5. contrôles sur l'empreinte réellement posée : existants, zones interdites, torse (3D)
+      const forbid = newCanvas(BOARD_W, BOARD_H); { const g = ctx2d(forbid); g.fillStyle = '#000'; g.fillRect(0, 0, BOARD_W, BOARD_H); g.globalCompositeOperation = 'destination-out'; g.drawImage(ctx.P.allowed, 0, 0); }
       const bad = [];
-      for (const t of placed) { const r = overlapReport(ctx.B, [t], ctx.M.protect), rc = overlapReport(ctx.B, [t], ctx.M.core); t._ov = r; if (rc.over > Math.max(6, rc.total * 0.002) || r.over > Math.max(8, r.total * 0.015)) bad.push(t); } // encre existante : strict ; marge : tolérance de rééchantillonnage
-      for (const t of bad) { S.variant.tattoos = S.tattoos.filter(x => x.id !== t.id); Decals.remove(t.id); }
-      const ok = placed.filter(t => !bad.includes(t));
+      for (const t of placed) {
+        let tor = torsoSpill(ctx.B, t); if (tor > 0) { for (let k = 0; k < 2 && tor > 0; k++) tor = await fixTorso(ctx.B, t); why.push(t.name + ' : encre retirée du torse'); }
+        const rc = overlapReport(ctx.B, [t], ctx.M.core), rf = overlapReport(ctx.B, [t], forbid); t._ov = { rc, rf, tor };
+        if (rc.over > Math.max(6, rc.total * 0.002)) bad.push([t, 'empiète sur un tatouage existant']);
+        else if (rf.over > Math.max(30, rf.total * 0.03)) bad.push([t, 'déborde des zones autorisées']);
+        else if (tor > 0.01) bad.push([t, 'déborde sur le torse']);
+      }
+      for (const [t] of bad) { S.variant.tattoos = S.tattoos.filter(x => x.id !== t.id); Decals.remove(t.id); }
+      const ok = placed.filter(t => !bad.some(b => b[0] === t));
       if (ctx.mode === 'retouche') for (const id of ctx.targets) { const t = S.tattoos.find(x => x.id === id); if (t) { t.visible = false; Decals.build(t); } }
-      // ceinture et bretelles : les calques protégés doivent être strictement identiques
-      const after = await lockedSnapshot(true, [...ctx.targets, ...ok.map(t => t.id), ...bad.map(t => t.id)]);
-      if (!sameSnapshot(snap, after)) { restoreLocked(snap); toast('Écart détecté sur un tatouage protégé : il a été restauré à l’identique.', 'err', 8000); }
-      this.preview = { batch, ids: ok.map(t => t.id), results, idx, st, ctx, rejected: rejected.length + bad.length + lost.length, kept: ok.length, lenient, raw: results[idx].url, boardUrl: board.toDataURL('image/png'), why: [...rejected.map(r => r.reason), ...bad.map((t) => 'empiète après pose (' + t._ov.over + '/' + t._ov.total + ' px, ' + t.widthCm + '×' + t.heightCm + ' cm)'), ...lost.map(() => 'hors du bras')] };
+      // 6. les calques d'avant doivent être strictement identiques (données + images)
+      const after = await lockedSnapshot(true, [...ctx.targets, ...ok.map(t => t.id)]);
+      const same = sameSnapshot(snap, after); if (!same) restoreLocked(snap);
+      const ids = new Set(ok.map(t => t.imageId));
+      checks.unshift([same ? '✓' : '⚠', same ? 'tatouages existants identiques (données et images)' : 'écart détecté sur un existant : restauré à l’identique'],
+        [ids.size === ok.length ? '✓' : '⚠', 'aucun calque dupliqué'],
+        ['✓', 'zones autorisées et torse vérifiés sur l’empreinte posée' + (bad.length ? ' (' + bad.length + ' calque(s) écarté(s))' : '')],
+        ctx.P.disc && parts.some(p => p.id === ex.mainId) ? ['✓', 'motif principal limité à ' + ctx.P.disc.dCm + ' cm'] : null);
+      this.preview = { batch, ids: ok.map(t => t.id), before, results, idx, st, ctx, kept: ok.length, raw: results[idx].url, boardUrl: '', layers: layers.filter(el => el._t && ok.includes(el._t)),
+        why: [...why, ...bad.map(b => b[0].name + ' : ' + b[1]), ...lost.map(() => 'élément hors du bras')], checks: checks.filter(Boolean), parts: this.partsInfo(parts) };
+      this.preview.boardCanvas = this.layersBoard(this.preview.layers); this.preview.boardUrl = this.preview.boardCanvas.toDataURL('image/png');
       busy.close(); m && m.close(); Save.mark(); UI.refreshAll(); this.showPreviewBar();
-      if (!ok.length) toast('Cette proposition ne contenait rien d’exploitable en dehors de vos tatouages. Touchez « Autre proposition » ou « Voir l’image IA ».', 'warn', 8000);
+      if (!ok.length) toast('Cette proposition ne contenait aucun ajout valide (rien n’a été posé). Touchez « Autre version ».', 'warn', 8000);
     } catch (e) { busy.close(); toast('Extraction impossible : ' + e.message, 'err', 8000); }
+  },
+  partsInfo(parts) { return parts.map(p => ({ id: p.id, zone: p.zone, w: p.w, h: p.h, scaled: p.scaled })); },
+  layersBoard(layers) { const c = newCanvas(BOARD_W, BOARD_H), g = ctx2d(c); for (const el of layers) g.drawImage(el.canvas, el.x0, el.y0); return c; }, // images extraites telles quelles (sans joints de triangles)
+  async visualCheck(ctx, parts, st) {
+    if (!parts.length) return { ok: true, remove: [], labels: [] };
+    try {
+      const W = BOARD_W, H = BOARD_H, c = newCanvas(W / 2, H / 2), g = ctx2d(c); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      for (const p of parts) g.drawImage(p.canvas, p.x0 / 2, p.y0 / 2, p.w / 2, p.h / 2);
+      const res = await fetch(this.endpoint + '/check', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Access-Code': this.accessCode },
+        body: JSON.stringify({ image: c.toDataURL('image/png'), forbidden: st.forbid || '', allowed: [st.main, 'acanthus leaves', 'scrolls', 'ornaments', 'dotwork shading', st.prompt.slice(0, 120)].filter(Boolean).join(', ') }), signal: AbortSignal.timeout ? AbortSignal.timeout(70000) : undefined });
+      const j = await res.json().catch(() => ({})); if (!res.ok) return { ok: false, err: j.error || 'HTTP ' + res.status };
+      const remove = [], labels = [];
+      for (const f of j.found || []) {
+        const [a, b, cc, d] = f.box, bx0 = a * W, by0 = b * H, bx1 = cc * W, by1 = d * H;
+        for (const p of parts) { const ix = Math.max(0, Math.min(bx1, p.x0 + p.w) - Math.max(bx0, p.x0)), iy = Math.max(0, Math.min(by1, p.y0 + p.h) - Math.max(by0, p.y0));
+          if (ix * iy > 0.3 * Math.min(p.w * p.h, (bx1 - bx0) * (by1 - by0))) { remove.push(p.id); labels.push(f.what); } }
+      }
+      return { ok: true, remove, labels };
+    } catch (e) { return { ok: false, err: e.message }; }
+  },
+  restoreBefore(P) { // état exact d'avant la proposition (calques, ordre, réglages)
+    for (const id of P.ids) Decals.remove(id);
+    S.variant.tattoos = JSON.parse(P.before); this.preview = null; App.rebuildAll();
+  },
+  async otherVersion() {
+    const P = this.preview; if (!P) return;
+    const next = P.results.findIndex((r, k) => k !== P.idx && !r.used); P.results[P.idx].used = true;
+    if (next >= 0) return this.applyAdditions(P.results, next, P.st, P.ctx, null);
+    // plus de proposition en réserve : nouvel appel avec la même demande ; la proposition actuelle sera remplacée
+    const busy = Busy.show('Nouvelle version (jusqu’à 2 minutes)…'); const my = ++this.reqId;
+    try {
+      const res = await fetch(this.endpoint + '/generate', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Access-Code': this.accessCode }, body: JSON.stringify(P.ctx.send) });
+      const j = await res.json().catch(() => ({})); if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status)); busy.close();
+      if (my !== this.reqId || this.preview !== P) return;
+      const results = []; for (const u of (j.images || [])) { const blob = await dataURLToBlob(u); results.push({ url: URL.createObjectURL(blob), blob }); }
+      if (!results.length) throw new Error('aucune image reçue');
+      await this.applyAdditions(results, 0, P.st, P.ctx, null);
+    } catch (e) { busy.close(); toast('Nouvelle version impossible : ' + e.message, 'err', 8000); }
   },
   showPreviewBar() {
     document.querySelectorAll('.ia-bar').forEach(n => n.remove()); const P = this.preview; if (!P) return;
-    const more = h('details', { style: { width: '100%' } }, h('summary', { style: { cursor: 'pointer' } }, 'Voir l’image IA et exporter'),
+    const more = h('details', { style: { width: '100%' } }, h('summary', { style: { cursor: 'pointer' } }, 'Contrôles, image IA et export'),
+      h('div', { class: 'muted', style: { fontSize: '12.5px', margin: '6px 0' } }, P.checks.map(([k, t]) => h('div', {}, k + ' ' + t)), P.why.length ? h('div', { style: { marginTop: '4px' } }, 'Corrigé / écarté : ' + [...new Set(P.why)].join(' · ')) : null),
       h('div', { style: { display: 'flex', gap: '8px', marginTop: '8px', alignItems: 'flex-start' } },
-        h('figure', { style: { margin: 0 } }, h('img', { src: P.raw, style: { width: '120px', borderRadius: '6px', background: '#fff' } }), h('figcaption', { class: 'muted' }, 'Proposition de l’IA')),
-        h('figure', { style: { margin: 0 } }, h('img', { src: P.boardUrl, style: { width: '120px', borderRadius: '6px', background: 'repeating-conic-gradient(#ccc 0 25%,#fff 0 50%) 0/16px 16px' } }), h('figcaption', { class: 'muted' }, 'Retenu (seuls les ajouts)')),
+        h('figure', { style: { margin: 0 } }, h('img', { src: P.raw, style: { width: '110px', borderRadius: '6px', background: '#fff' } }), h('figcaption', { class: 'muted' }, 'Image brute de l’IA')),
+        h('figure', { style: { margin: 0 } }, h('img', { src: P.boardUrl, style: { width: '110px', borderRadius: '6px', background: 'repeating-conic-gradient(#ccc 0 25%,#fff 0 50%) 0/16px 16px' } }), h('figcaption', { class: 'muted' }, 'Calques posés')),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
-          h('button', { class: 'btn sm', onclick: () => this.exportAdditions(false) }, 'PNG transparent'), h('button', { class: 'btn sm', onclick: () => this.exportAdditions(true) }, 'PNG fond blanc'),
-          P.why.length ? h('small', { class: 'muted', style: { maxWidth: '200px' } }, 'Écarté : ' + [...new Set(P.why)].join(', ')) : null)));
+          h('button', { class: 'btn sm', onclick: () => this.exportAdditions(false) }, 'PNG transparent'), h('button', { class: 'btn sm', onclick: () => this.exportAdditions(true) }, 'PNG fond blanc'))));
     const bar = h('div', { class: 'ia-bar', style: { position: 'fixed', left: '50%', transform: 'translateX(-50%)', top: '64px', zIndex: '900', background: '#1d1c22', border: '1px solid #c9a46a', borderRadius: '12px', padding: '10px 12px', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', maxWidth: '96vw', width: '560px', boxShadow: '0 8px 30px rgba(0,0,0,.5)' } },
-      h('b', { style: { flex: 1 } }, P.kept ? '✦ Aperçu : ' + (P.kept > 1 ? P.kept + ' ajouts' : 'ajouts posés') : '✦ Rien d’exploitable'),
+      h('b', { style: { flex: 1 } }, P.kept ? '✦ Aperçu : ' + P.kept + ' calque' + (P.kept > 1 ? 's' : '') : '✦ Proposition rejetée'),
       P.kept ? h('button', { class: 'btn sm primary', onclick: () => this.validatePreview() }, 'Garder') : null,
-      P.results.length > 1 ? h('button', { class: 'btn sm', onclick: () => this.applyAdditions(P.results, (P.idx + 1) % P.results.length, P.st, P.ctx, null) }, 'Autre version') : null,
+      h('button', { class: 'btn sm', onclick: () => this.otherVersion() }, 'Autre version'),
       h('button', { class: 'btn sm', onclick: () => this.cancelPreview() }, 'Annuler'), more);
     document.body.append(bar);
   },
   validatePreview() {
     const P = this.preview; if (!P) return;
-    History.record();
     for (const t of S.tattoos) if (P.ids.includes(t.id)) t.pending = false;
     if (P.ctx.mode === 'retouche') { S.variant.tattoos = S.tattoos.filter(t => !P.ctx.targets.includes(t.id)); P.ctx.targets.forEach(id => Decals.remove(id)); }
     this.preview = null; document.querySelectorAll('.ia-bar').forEach(n => n.remove()); Save.mark(); UI.refreshAll(); toast('Ajouts validés : calques indépendants (sélection, déplacement, taille, masquage, suppression).', 'ok', 6000);
   },
   cancelPreview(silent) {
     const P = this.preview; if (!P) return;
-    S.variant.tattoos = S.tattoos.filter(t => !P.ids.includes(t.id)); P.ids.forEach(id => Decals.remove(id));
-    if (P.ctx.mode === 'retouche') for (const id of P.ctx.targets) { const t = S.tattoos.find(x => x.id === id); if (t) { t.visible = true; Decals.build(t); } }
-    this.preview = null; document.querySelectorAll('.ia-bar').forEach(n => n.remove()); Save.mark(); UI.refreshAll(); if (!silent) toast('Ajouts annulés : état précédent restauré.');
+    this.restoreBefore(P);
+    document.querySelectorAll('.ia-bar').forEach(n => n.remove()); Save.mark(); UI.refreshAll(); if (!silent) toast('Ajouts annulés : état précédent restauré à l’identique.');
   },
   exportAdditions(white) {
     const P = this.preview; const ids = P ? P.ids : S.tattoos.filter(t => t.origin === 'ia' && t.visible).map(t => t.id);
     const B = (P && P.ctx.B) || Board.frame((this.st && this.st.side) || 'r'); if (!B) return;
-    const c = Board.render(B, S.tattoos.filter(t => ids.includes(t.id)), 'ink');
+    const c = P && P.boardCanvas ? P.boardCanvas : Board.render(B, S.tattoos.filter(t => ids.includes(t.id)), 'ink');
     const out = newCanvas(B.bw + 40, BOARD_H), g = ctx2d(out); if (white) { g.fillStyle = '#fff'; g.fillRect(0, 0, out.width, out.height); }
     g.drawImage(c, B.bx0 - 20, 0, B.bw + 40, BOARD_H, 0, 0, B.bw + 40, BOARD_H);
     out.toBlob((b) => download(b, 'inkbody-ajouts-' + (white ? 'fond-blanc' : 'transparent') + '.png'), 'image/png');
@@ -4244,7 +4353,7 @@ async function boot() {
   if (!localStorage.getItem('inkbody.guide')) showGuide();
   setTimeout(gcImages, 5000);
   try { sessionStorage.removeItem('ibFix'); } catch (e) { /* */ }
-  window.InkBody = { S, App, Body, Engine, Decals, Hair, Proxies, AI, Board, Placer, lockedSnapshot, overlapReport, Save, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
+  window.InkBody = { S, App, Body, Engine, Decals, Hair, Proxies, AI, Board, Placer, lockedSnapshot, overlapReport, extractParts, removeCopies, groupParts, torsoSpill, Save, Measure, Projects, Export, Images, History, setMode, Interact, Editor, Draw, Importer, UI }; // accès pour tests
 }
 boot().catch((e) => { const l = document.getElementById('loader'); if (l) { const d = document.createElement('div'); d.className = 'muted'; d.style.cssText = 'max-width:460px;text-align:center;padding:0 16px'; d.textContent = 'Erreur au démarrage : ' + (e && e.message || e); l.appendChild(d); } });
 
@@ -4489,6 +4598,344 @@ function sameSnapshot(a, b) { return JSON.stringify(a.locked) === JSON.stringify
 function restoreLocked(snap) {
   for (const { v, t } of snap.locked) { const vv = S.project.variants.find(x => x.id === v); if (!vv) continue; const o = JSON.parse(t); const i = vv.tattoos.findIndex(x => x.id === o.id); if (i >= 0) vv.tattoos[i] = o; else vv.tattoos.push(o); }
   App.rebuildAll(); Save.mark();
+}
+
+// ================================================================ Composition IA v2 : zones calculées, guide, extraction contrôlée
+// Constat (capture « tournesol + roi en double ») :
+//  1. le serveur demandait au modèle de « réutiliser les motifs des références » → il redessinait le roi et le damier ;
+//  2. le repli « tolérant » gardait tout ce qui était hors des zones protégées, y compris ces copies ;
+//  3. rien ne fixait la taille du motif principal ni n'interdisait le haut de planche qui retombe sur le torse ;
+//  4. aucun contrôle de densité : l'encre du modèle était posée telle quelle (noirs pleins).
+// Ici : zones autorisées calculées depuis la peau réelle et les calques, guide (disque du motif principal) dans l'image,
+// extraction stricte, correction de taille, allègement des noirs, détection damier / copie, contrôle 3D du torse.
+
+const GUIDE_DISC = [255, 241, 184]; // jaune pâle : emplacement et taille max du motif principal (retiré à l'extraction)
+
+// peau du bras réellement utilisable pour (φ, le long) : pas de torse de face/dos, pas de face cachée (aisselle)
+Board.skinOk = function (B, phi, along) {
+  const segs = B.F.segs; along = clamp(along, 0, B.F.total - 1e-4); let i = segs.length - 1; for (let k = 0; k < segs.length; k++) if (along < segs[k].cum + segs[k].L) { i = k; break; }
+  const sg = segs[i]; const ax = sg.a.clone().addScaledVector(sg.dir, clamp(along - sg.cum, 0, sg.L));
+  const dir = B.F.e1[i].clone().multiplyScalar(Math.cos(phi)).addScaledVector(B.F.e2[i], Math.sin(phi));
+  const hit = Body.closest(ax.clone().addScaledVector(dir, 0.022)); if (!hit) return false;
+  return Board.hitOk(B, hit, ax, dir);
+};
+Board.hitOk = function (B, hit, ax, dir) {
+  const rg = Body.regionName(hit.faceIndex), n = Body.surface({ f: hit.faceIndex, b: [1 / 3, 1 / 3, 1 / 3] }).n;
+  if (ax && hit.point.distanceTo(ax) > 0.11) return false;               // projection traversante (autre partie du corps)
+  if (dir && n.dot(dir) < 0.12) return false;                              // face qui ne regarde pas vers l'extérieur du bras
+  if (B.limb.regions.includes(rg)) return true;
+  if (rg !== 'torso') return false;
+  const lat = Math.sign(Body.bones['upperarm_' + B.side].a.x) || (B.side === 'l' ? 1 : -1);
+  const J = Body.bones['upperarm_' + B.side].a;
+  if ((hit.point.x - J.x) * lat < -0.025) return false;                      // côté cou (trapèze), aisselle : non
+  return n.x * lat > 0.45 || (n.y > 0.75 && (hit.point.x - J.x) * lat > 0); // moignon de l'épaule (deltoïde, dessus) : oui ; pectoral / dos : non
+};
+// carte de peau valide (calculée sur une grille, cache par repère)
+Board._vc = new Map();
+Board.validMap = function (B, includeHand = false) {
+  const key = B.side + (includeHand ? 1 : 0) + '|' + Body.nV + '|' + JSON.stringify(S.project && S.project.avatar && S.project.avatar.params);
+  if (Board._vc.has(key)) return Board._vc.get(key); if (Board._vc.size > 6) Board._vc.clear();
+  const GW = 96, GH = 144, sx = BOARD_W / GW, sy = BOARD_H / GH, g = newCanvas(GW, GH), gg = ctx2d(g), im = gg.createImageData(GW, GH);
+  const yHand = (B.wristAlong + 0.01) / B.mpp;
+  for (let y = 0; y < GH; y++) for (let x = 0; x < GW; x++) {
+    const px = (x + 0.5) * sx, py = (y + 0.5) * sy; if (px < B.bx0 || px > B.bx0 + B.bw) continue; if (!includeHand && py > yHand) continue;
+    const phi = ((px - B.bx0) / B.bw - 0.5) * 2 * Math.PI; if (Board.skinOk(B, phi, py * B.mpp)) im.data[(y * GW + x) * 4 + 3] = 255;
+  }
+  gg.putImageData(im, 0, 0);
+  const c = newCanvas(BOARD_W, BOARD_H), cg = ctx2d(c); cg.imageSmoothingEnabled = true; cg.drawImage(g, 0, 0, BOARD_W, BOARD_H); binarize(c, 140);
+  Board._vc.set(key, c); return c;
+};
+
+// plan de composition : zones libres réelles et taille du motif principal (calculées, pas laissées au modèle)
+Board.plan = function (B, M, opt = {}) {
+  const W = BOARD_W, H = BOARD_H, cm = 0.01 / B.mpp;                   // pixels par cm (≈ isotrope au biceps)
+  const valid = alphaOf(Board.validMap(B, opt.includeHand)), prot = alphaOf(M.protect), core = alphaOf(M.core);
+  const free = new Uint8Array(W * H); for (let i = 0; i < W * H; i++) free[i] = valid[i] && !prot[i] ? 1 : 0;
+  const x0 = B.bx0, x1 = B.bx0 + B.bw;
+  const rowFree = (y) => { let n = 0; for (let x = x0; x < x1; x++) n += free[y * W + x]; return n; };
+  let yTop = 0; for (let y = 0; y < H; y++) if (rowFree(y) > B.bw * 0.3) { yTop = y; break; }
+  let yTat = -1; for (let y = 0; y < H && yTat < 0; y++) for (let x = x0; x < x1; x++) if (core[y * W + x]) { yTat = y; break; }
+  const yE = B.F.segs[2] ? B.F.segs[2].cum / B.mpp : H * 0.55, yW = B.F.segs[3] ? B.F.segs[3].cum / B.mpp : H * 0.9;
+  const gap = 1.2 * cm, yShoulderEnd = Math.max(yTop + 4 * cm, Math.min(yTat > 0 ? yTat - gap : yE - 6 * cm, yE - 6 * cm));
+  // disque du motif principal : le plus grand qui tient dans la peau libre de l'épaule, face externe, collé en haut
+  let disc = null;
+  if (opt.main) {
+    const maxD = Math.min(opt.maxMainCm || 13, (yShoulderEnd - yTop) / cm - 0.6, B.bw * 0.55 / cm);
+    const fits = (cx, cy, r) => { let n = 0, ok = 0; for (let a = 0; a < 48; a++) for (const f of [1, 0.66, 0.33]) { const x = Math.round(cx + Math.cos(a / 48 * 2 * Math.PI) * r * f), y = Math.round(cy + Math.sin(a / 48 * 2 * Math.PI) * r * f); n++; if (x >= 0 && y >= 0 && x < W && y < H && free[y * W + x]) ok++; } return ok / n; };
+    outer: for (let D = maxD; D >= 5; D -= 0.4) {
+      const r = D * cm / 2;
+      const yJ = B.F.segs[1].cum / B.mpp, cy0 = Math.max(yTop + r + 0.4 * cm, yJ - 2.5 * cm + r, yJ + 4 * cm); // deltoïde : centre ≈ 4 cm sous l'articulation au moins
+      for (const dx of [0, -0.06, 0.06, -0.12, 0.12, -0.18, 0.18]) for (const dy of [0, -1, -2, 1, -3]) {
+        const cx = x0 + B.bw * (0.5 + dx), cy = cy0 + dy * cm; if (cy - r < yTop || cy + r > yShoulderEnd + 0.3 * cm) continue;
+        if (fits(cx, cy, r) >= 0.97) { disc = { cx, cy, r, dCm: +D.toFixed(1) }; break outer; }
+      }
+    }
+  }
+  const bands = [
+    { key: 'epaule', label: 'Épaule', y0: yTop, y1: yShoulderEnd },
+    { key: 'cotes', label: 'Côtés du bras (autour des existants)', y0: yShoulderEnd, y1: yE - 3.5 * cm },
+    { key: 'coude', label: 'Raccord du coude', y0: yE - 3.5 * cm, y1: yE + 4 * cm },
+    { key: 'avantbras', label: 'Début de l’avant-bras', y0: yE + 4 * cm, y1: Math.min(yE + 13 * cm, yW - 1.5 * cm) },
+  ];
+  const zones = [], zoneOf = new Int8Array(W * H).fill(-1);
+  for (const b of bands) {
+    if (b.y1 - b.y0 < 1.5 * cm) continue; let n = 0, bx0 = W, bx1 = -1;
+    for (let y = Math.max(0, Math.round(b.y0)); y < Math.min(H, Math.round(b.y1)); y++) for (let x = x0; x < x1; x++) { const i = y * W + x; if (!free[i]) continue; n++; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; }
+    const area = n / (cm * cm); if (area < 6) continue;
+    const z = { ...b, areaCm2: Math.round(area), wCm: +((bx1 - bx0) / cm).toFixed(1), hCm: +((b.y1 - b.y0) / cm).toFixed(1), on: !(opt.off || []).includes(b.key) };
+    z.idx = zones.length; zones.push(z);
+    for (let y = Math.max(0, Math.round(b.y0)); y < Math.min(H, Math.round(b.y1)); y++) for (let x = x0; x < x1; x++) { const i = y * W + x; if (free[i]) zoneOf[i] = z.idx; }
+  }
+  const allowed = newCanvas(W, H), ag = ctx2d(allowed), ad = ag.createImageData(W, H);
+  for (let i = 0; i < W * H; i++) if (zoneOf[i] >= 0 && zones[zoneOf[i]].on) ad.data[i * 4 + 3] = 255;
+  ag.putImageData(ad, 0, 0);
+  return { disc, zones, zoneOf, allowed, cm, yTop, yTat, yE, main: opt.main || '' };
+};
+
+// retouche d'un ajout : une seule zone (la zone libérée autour des calques ciblés)
+Board.planFromMask = function (B, M, includeHand) {
+  const W = BOARD_W, H = BOARD_H, valid = alphaOf(Board.validMap(B, includeHand)), prot = alphaOf(M.protect);
+  const zoneOf = new Int8Array(W * H).fill(-1), allowed = newCanvas(W, H), ag = ctx2d(allowed), ad = ag.createImageData(W, H);
+  for (let i = 0; i < W * H; i++) if (valid[i] && !prot[i]) { zoneOf[i] = 0; ad.data[i * 4 + 3] = 255; }
+  ag.putImageData(ad, 0, 0);
+  return { disc: null, zones: [{ key: 'retouche', label: 'Zone retouchée', on: true, idx: 0 }], zoneOf, allowed, cm: 0.01 / B.mpp, main: '' };
+};
+// image + masque envoyés au modèle : bleu = interdit (existants, marge, hors bras, torse), blanc = autorisé, jaune = motif principal
+Board.guideInputs = function (B, P) {
+  const W = BOARD_W, H = BOARD_H, img = newCanvas(W, H), g = ctx2d(img); g.fillStyle = RESERVED; g.fillRect(0, 0, W, H);
+  const white = newCanvas(W, H), wg = ctx2d(white); wg.drawImage(P.allowed, 0, 0); wg.globalCompositeOperation = 'source-in'; wg.fillStyle = '#fff'; wg.fillRect(0, 0, W, H);
+  g.drawImage(white, 0, 0);
+  if (P.disc) { g.fillStyle = `rgb(${GUIDE_DISC})`; g.beginPath(); g.arc(P.disc.cx, P.disc.cy, P.disc.r, 0, Math.PI * 2); g.fill(); }
+  g.strokeStyle = 'rgba(0,0,0,0.12)'; g.setLineDash([6, 8]);
+  for (const k of [2, 3]) if (B.F.segs[k]) { const y = B.F.segs[k].cum / B.mpp; g.beginPath(); g.moveTo(B.bx0, y); g.lineTo(B.bx0 + B.bw, y); g.stroke(); }
+  const mask = newCanvas(W, H), mg = ctx2d(mask); mg.fillStyle = '#000'; mg.fillRect(0, 0, W, H); mg.globalCompositeOperation = 'destination-out'; mg.drawImage(P.allowed, 0, 0);
+  return { image: img, mask };
+};
+
+// ---- extraction v2 : éléments (« parts ») indépendants, contrôlés, corrigés
+function extractParts(B, M, P, result, opt = {}) {
+  const W = BOARD_W, H = BOARD_H, c = newCanvas(W, H), g = ctx2d(c); g.drawImage(result, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data, cm = P.cm, why = [];
+  const allowA = alphaOf(P.allowed), forb = new Uint8Array(W * H); for (let i = 0; i < W * H; i++) forb[i] = allowA[i] ? 0 : 1;
+  const fc = newCanvas(W, H), fg = ctx2d(fc), fd = fg.createImageData(W, H); for (let i = 0; i < W * H; i++) if (forb[i]) fd.data[i * 4 + 3] = 255; fg.putImageData(fd, 0, 0);
+  const forbS = alphaOf(dilate(fc, 4)), forbF = alphaOf(dilate(fc, 12));
+  // papier : médiane des pixels clairs autorisés
+  const sample = []; for (let i = 0; i < W * H; i += 29) if (!forbF[i]) { const L = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2]; if (L > 170) sample.push([d[i * 4], d[i * 4 + 1], d[i * 4 + 2], L]); }
+  sample.sort((a, b) => a[3] - b[3]); const bg = sample.length ? sample[Math.floor(sample.length * 0.6)] : [255, 255, 255, 255], bgL = Math.max(bg[3], 200);
+  const A = new Float32Array(W * H), G = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2], L = 0.299 * r + 0.587 * gg + 0.114 * b;
+    if (b > r + 18 && b > gg + 2 && L > 140) continue;                                   // bleu « interdit » (ou encre bleutée claire recopiée)
+    if (L > 200 && r > b + 25 && gg > b + 12) continue;                                  // jaune du guide
+    const a = clamp((bgL - L - 10) / (bgL * 0.8), 0, 1); if (!a) continue;
+    A[i] = a; G[i] = clamp(Math.round(L - bgL * (1 - a)) / Math.max(a, 0.05), 0, 255);   // ton de l'encre, sans le papier
+  }
+  // composantes (grossies de ~4 mm pour regrouper les traits d'un même motif)
+  const w2 = W >> 1, h2 = H >> 1, small = new Uint8Array(w2 * h2);
+  for (let i = 0; i < W * H; i++) if (A[i] > 0.12) small[((i / W) >> 1) * w2 + ((i % W) >> 1)] = 1;
+  const grow = Math.max(1, Math.round(0.4 * cm / 2)), dil = new Uint8Array(w2 * h2);
+  for (let y = 0; y < h2; y++) for (let x = 0; x < w2; x++) if (small[y * w2 + x]) for (let dy = -grow; dy <= grow; dy++) for (let dx = -grow; dx <= grow; dx++) { const xx = x + dx, yy = y + dy; if (xx >= 0 && yy >= 0 && xx < w2 && yy < h2) dil[yy * w2 + xx] = 1; }
+  const lab = new Int32Array(w2 * h2).fill(-1); let nl = 0; const stack = new Int32Array(w2 * h2);
+  for (let p = 0; p < w2 * h2; p++) { if (!dil[p] || lab[p] >= 0) continue; let sp = 0; stack[sp++] = p; lab[p] = nl; while (sp) { const q = stack[--sp], x = q % w2, y = (q / w2) | 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const xx = x + dx, yy = y + dy; if (xx < 0 || yy < 0 || xx >= w2 || yy >= h2) continue; const r = yy * w2 + xx; if (dil[r] && lab[r] < 0) { lab[r] = nl; stack[sp++] = r; } } } nl++; }
+  const comps = Array.from({ length: nl }, () => ({ n: 0, inF: 0, x0: W, y0: H, x1: -1, y1: -1, zc: new Map() }));
+  const lbl = new Int32Array(W * H).fill(-1);
+  for (let i = 0; i < W * H; i++) { if (A[i] <= 0.12) continue; const L = lab[((i / W) >> 1) * w2 + ((i % W) >> 1)]; if (L < 0) continue; lbl[i] = L; const C = comps[L]; C.n++; if (forbS[i]) C.inF++; const x = i % W, y = (i / W) | 0; if (x < C.x0) C.x0 = x; if (y < C.y0) C.y0 = y; if (x > C.x1) C.x1 = x; if (y > C.y1) C.y1 = y; const z = P.zoneOf[i]; if (z >= 0) C.zc.set(z, (C.zc.get(z) || 0) + 1); }
+  const minPx = Math.max(60, Math.round((0.3 * cm) ** 2));
+  // sortie : alpha + ton, éléments éventuellement réduits pour tenir dans leur zone
+  const OA = new Float32Array(W * H), OG = new Uint8Array(W * H), OL = new Int32Array(W * H).fill(-1);
+  const tmp = newCanvas(8, 8);
+  let scaledN = 0, mainL = -1;
+  if (P.disc) { // motif principal = élément qui occupe le plus le disque jaune
+    let best = 0; const { cx, cy, r } = P.disc;
+    for (let L = 0; L < nl; L++) { const C = comps[L]; if (C.n < minPx || C.x1 < cx - r || C.x0 > cx + r || C.y1 < cy - r || C.y0 > cy + r) continue; let k = 0; for (let y = Math.max(0, Math.round(cy - r)); y < Math.min(H, cy + r); y += 2) for (let x = Math.max(0, Math.round(cx - r)); x < Math.min(W, cx + r); x += 2) if (lbl[y * W + x] === L && (x - cx) ** 2 + (y - cy) ** 2 < r * r) k++; if (k > best) { best = k; mainL = L; } }
+  }
+  const putScaled = (L, C, f, ax, ay, tx, ty) => { // copie réduite de l'élément L (facteur f autour de ax,ay, recentré en tx,ty)
+    const cw = C.x1 - C.x0 + 1, ch = C.y1 - C.y0 + 1; tmp.width = cw; tmp.height = ch; const tg = ctx2d(tmp), td = tg.createImageData(cw, ch);
+    for (let y = C.y0; y <= C.y1; y++) for (let x = C.x0; x <= C.x1; x++) { const i = y * W + x; if (lbl[i] !== L) continue; const q = ((y - C.y0) * cw + (x - C.x0)) * 4; td.data[q] = td.data[q + 1] = td.data[q + 2] = G[i]; td.data[q + 3] = Math.round(A[i] * 255); }
+    tg.putImageData(td, 0, 0);
+    const sw = Math.max(1, Math.round(cw * f)), sh = Math.max(1, Math.round(ch * f)), sc = newCanvas(sw, sh), sg = ctx2d(sc); sg.imageSmoothingQuality = 'high'; sg.drawImage(tmp, 0, 0, sw, sh);
+    const sd = sg.getImageData(0, 0, sw, sh).data, ox = Math.round(tx + (C.x0 - ax) * f), oy = Math.round(ty + (C.y0 - ay) * f);
+    for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) { const a = sd[(y * sw + x) * 4 + 3] / 255; if (a < 0.03) continue; const X = ox + x, Y = oy + y; if (X < 0 || Y < 0 || X >= W || Y >= H) continue; const i = Y * W + X; if (a > OA[i]) { OA[i] = a; OG[i] = sd[(y * sw + x) * 4]; OL[i] = L; } }
+  };
+  for (let L = 0; L < nl; L++) {
+    const C = comps[L]; if (C.n < minPx) continue;
+    if (L === mainL) { // taille fixée par le plan, pas par le modèle
+      const D = 2 * P.disc.r, md = Math.max(C.x1 - C.x0, C.y1 - C.y0);
+      if (md > D * 1.18 && md < D * 2.6) { const f = D * 1.08 / md; putScaled(L, C, f, (C.x0 + C.x1) / 2, (C.y0 + C.y1) / 2, P.disc.cx, P.disc.cy); C.scaled = f; why.push((P.main || 'motif principal') + ' ramené à ' + P.disc.dCm + ' cm (dessiné à ' + Math.round(md / cm) + ' cm)'); continue; }
+      if (md >= D * 2.6) why.push('motif principal fondu dans le feuillage : taille non ajustable séparément');
+    }
+    const spill = C.inF / C.n; let zMain = -1, zMax = 0; for (const [z, k] of C.zc) if (k > zMax) { zMax = k; zMain = z; }
+    const oneZone = zMax / Math.max(1, C.n - C.inF) > 0.7;
+    let f = 1;
+    if (spill > 0.04 && oneZone && spill < 0.7) { // trop grand pour sa zone (ex. tournesol qui descend sur le roi) : on le réduit au lieu de le couper
+      let ax = 0, ay = 0, an = 0;
+      for (let y = C.y0; y <= C.y1; y++) for (let x = C.x0; x <= C.x1; x++) { const i = y * W + x; if (lbl[i] === L && !forbS[i]) { ax += x; ay += y; an++; } }
+      ax /= Math.max(1, an); ay /= Math.max(1, an);
+      for (const ff of [0.92, 0.85, 0.78, 0.71, 0.64, 0.58]) {
+        let tot = 0, bad = 0;
+        for (let y = C.y0; y <= C.y1; y += 2) for (let x = C.x0; x <= C.x1; x += 2) { const i = y * W + x; if (lbl[i] !== L) continue; const nx = Math.round(ax + (x - ax) * ff), ny = Math.round(ay + (y - ay) * ff); tot++; if (nx < 0 || ny < 0 || nx >= W || ny >= H || forbS[ny * W + nx]) bad++; }
+        if (bad / Math.max(1, tot) <= 0.03) { f = ff; break; }
+      }
+      if (f < 1) { scaledN++; putScaled(L, C, f, ax, ay, ax, ay); C.scaled = f; continue; }
+    }
+    if (spill > (oneZone ? 0.35 : 0.6)) { why.push('élément surtout dessiné sur une zone interdite'); continue; }
+    if (spill > 0.1) C.clipped = true;
+    for (let y = C.y0; y <= C.y1; y++) for (let x = C.x0; x <= C.x1; x++) { const i = y * W + x; if (lbl[i] !== L) continue; if (A[i] > OA[i]) { OA[i] = A[i]; OG[i] = G[i]; OL[i] = L; } }
+  }
+  if (scaledN) why.push(scaledN + ' élément(s) réduit(s) pour tenir dans leur zone');
+  // coupe stricte : rien hors zones autorisées (bord adouci ~3 mm)
+  for (let i = 0; i < W * H; i++) { if (!OA[i]) continue; if (forbS[i]) { OA[i] = 0; OL[i] = -1; } else if (forbF[i]) OA[i] *= 0.55; }
+  // motifs en damier (cases à angles droits alternées) : retirés — jamais demandés, signe d'une recopie
+  const T = Math.max(16, Math.round(1.2 * cm)), step = T >> 1, hits = [];
+  for (let ty = 0; ty + T <= H; ty += step) for (let tx = B.bx0; tx + T <= B.bx0 + B.bw; tx += step) {
+    let eAx = 0, eAll = 0, filled = 0, inked = 0;
+    for (let y = ty + 1; y < ty + T - 1; y++) for (let x = tx + 1; x < tx + T - 1; x++) {
+      const i = y * W + x, a = OA[i]; if (a > 0.05) inked++; if (a > 0.6) filled++;
+      const gx = OA[i + 1] - OA[i - 1], gy = OA[i + W] - OA[i - W], e = gx * gx + gy * gy; if (e < 0.04) continue;
+      eAll += e; const ang = Math.abs(Math.atan2(gy, gx)) % (Math.PI / 2); if (ang < 0.14 || ang > Math.PI / 2 - 0.14) eAx += e;
+    }
+    const area = (T - 2) * (T - 2);
+    if (inked > area * 0.35 && filled > area * 0.18 && filled < area * 0.75 && eAll > area * 0.08 && eAx / eAll > 0.62) hits.push([tx, ty]);
+  }
+  if (hits.length >= 3) {
+    const er = newCanvas(W, H), eg = ctx2d(er); eg.fillStyle = '#000'; for (const [x, y] of hits) eg.fillRect(x - T / 3, y - T / 3, T * 1.66, T * 1.66);
+    const e = alphaOf(er); for (let i = 0; i < W * H; i++) if (e[i]) { OA[i] = 0; OL[i] = -1; }
+    why.push('motif en damier retiré');
+  }
+  // noirs massifs → ombrage : allègement là où l'encre est pleine sur ~1 cm, puis ton global aligné sur les existants
+  const R = Math.max(4, Math.round(0.5 * cm)), I2 = new Float64Array((W + 1) * (H + 1));
+  for (let y = 0; y < H; y++) { let s = 0; for (let x = 0; x < W; x++) { s += OA[y * W + x]; I2[(y + 1) * (W + 1) + x + 1] = I2[y * (W + 1) + x + 1] + s; } }
+  let heavy = 0, inkN = 0;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const i = y * W + x; if (!OA[i]) continue; inkN++;
+    const xa = Math.max(0, x - R), xb = Math.min(W, x + R + 1), ya = Math.max(0, y - R), yb = Math.min(H, y + R + 1);
+    const mean = (I2[yb * (W + 1) + xb] - I2[ya * (W + 1) + xb] - I2[yb * (W + 1) + xa] + I2[ya * (W + 1) + xa]) / ((xb - xa) * (yb - ya));
+    if (mean > 0.55) { heavy++; const k = clamp((mean - 0.55) / 0.35, 0, 1); OA[i] *= 1 - 0.38 * k * k * (3 - 2 * k); }
+  }
+  if (heavy > inkN * 0.08) why.push('aplats noirs allégés en ombrage');
+  const exA = alphaOf(M.ink); let es = 0, en = 0; for (let i = 0; i < W * H; i += 3) if (exA[i] > 25) { es += exA[i] / 255; en++; }
+  const target = en > 200 ? Math.min(0.62, es / en * 1.1) : 0.5;
+  let as = 0, an = 0; for (let i = 0; i < W * H; i += 3) if (OA[i] > 0.1) { as += OA[i]; an++; }
+  if (an && as / an > target) { let lo = 1, hi = 3; for (let it = 0; it < 14; it++) { const gm = (lo + hi) / 2; let s = 0; for (let i = 0; i < W * H; i += 3) if (OA[i] > 0.1) s += OA[i] ** gm; if (s / an > target) lo = gm; else hi = gm; } const gm = (lo + hi) / 2; for (let i = 0; i < W * H; i++) if (OA[i]) OA[i] = OA[i] ** gm; }
+  // densité : il doit rester de la peau visible dans les zones autorisées
+  let allowN = 0, cov = 0; for (let i = 0; i < W * H; i += 2) if (allowA[i]) { allowN++; if (OA[i] > 0.25) cov++; }
+  const density = allowN ? cov / allowN : 0;
+  // éléments finaux (une image transparente par composante restante), zone dominante
+  const parts = [];
+  const color = !!opt.color;
+  for (let L = 0; L < nl; L++) {
+    const C = comps[L]; let a0 = W, b0 = H, a1 = -1, b1 = -1, n = 0; const zc = new Map();
+    for (let y = Math.max(0, C.y0 - 60); y <= Math.min(H - 1, C.y1 + 60); y++) for (let x = Math.max(0, C.x0 - 60); x <= Math.min(W - 1, C.x1 + 60); x++) { const i = y * W + x; if (OL[i] !== L || OA[i] < 0.03) continue; n++; if (x < a0) a0 = x; if (y < b0) b0 = y; if (x > a1) a1 = x; if (y > b1) b1 = y; const z = P.zoneOf[i]; if (z >= 0) zc.set(z, (zc.get(z) || 0) + 1); }
+    if (n < minPx) continue;
+    const cw = a1 - a0 + 1, ch = b1 - b0 + 1, el = newCanvas(cw, ch), eg = ctx2d(el), ed = eg.createImageData(cw, ch);
+    for (let y = b0; y <= b1; y++) for (let x = a0; x <= a1; x++) { const i = y * W + x; if (OL[i] !== L) continue; const q = ((y - b0) * cw + (x - a0)) * 4; const k = i * 4;
+      if (color) { ed.data[q] = d[k]; ed.data[q + 1] = d[k + 1]; ed.data[q + 2] = d[k + 2]; } else ed.data[q] = ed.data[q + 1] = ed.data[q + 2] = Math.min(OG[i], 70); // noir et gris : encre neutre
+      ed.data[q + 3] = Math.round(OA[i] * 255); }
+    eg.putImageData(ed, 0, 0);
+    let z = -1, zm = 0; for (const [k, v] of zc) if (v > zm) { zm = v; z = k; }
+    parts.push({ id: L, canvas: el, x0: a0, y0: b0, w: cw, h: ch, n, zone: z, scaled: C.scaled || 1 });
+  }
+  return { parts, why, density, bg, mainId: mainL };
+}
+
+// regroupe les éléments en calques : un par zone (tournesol / feuillage / coude / avant-bras) ou un par élément
+function groupParts(P, parts, perPart, mainId = -1) {
+  if (perPart) return parts.map((p, k) => ({ ...p, name: 'Ajout IA ' + (k + 1) }));
+  const byZ = new Map(); for (const p of parts) { const k = p.zone; if (!byZ.has(k)) byZ.set(k, []); byZ.get(k).push(p); }
+  const out = [];
+  for (const [z, ps] of byZ) {
+    const x0 = Math.min(...ps.map(p => p.x0)), y0 = Math.min(...ps.map(p => p.y0)), x1 = Math.max(...ps.map(p => p.x0 + p.w)), y1 = Math.max(...ps.map(p => p.y0 + p.h));
+    const c = newCanvas(x1 - x0, y1 - y0), g = ctx2d(c); for (const p of ps) g.drawImage(p.canvas, p.x0 - x0, p.y0 - y0);
+    const zone = P.zones[z];
+    const name = zone ? (zone.key === 'epaule' && P.main && ps.some(p => p.id === mainId) ? cap(P.main) + ' (épaule)' : { epaule: 'Ornements d’épaule', cotes: 'Feuillage', coude: 'Raccord du coude', avantbras: 'Prolongements avant-bras' }[zone.key]) : 'Ajouts IA';
+    out.push({ canvas: c, x0, y0, w: x1 - x0, h: y1 - y0, n: ps.reduce((s, p) => s + p.n, 0), zone: z, parts: ps.map(p => p.id), name });
+  }
+  return out.sort((a, b) => a.y0 - b.y0);
+}
+function cap(s) { s = String(s || '').trim(); return s ? s[0].toUpperCase() + s.slice(1) : s; }
+
+// signature de forme (orientations des contours, 4×4 cases) : repère les recopies d'un motif existant (indicatif)
+function shapeSig(img, crop) {
+  const S = 48, c = newCanvas(S, S), g = ctx2d(c); g.fillStyle = '#fff'; g.fillRect(0, 0, S, S);
+  const [sx, sy, sw, sh] = crop || [0, 0, img.width, img.height]; const k = Math.min(S / sw, S / sh), dw = sw * k, dh = sh * k;
+  g.drawImage(img, sx, sy, sw, sh, (S - dw) / 2, (S - dh) / 2, dw, dh);
+  const d = g.getImageData(0, 0, S, S).data, L = new Float32Array(S * S); for (let i = 0; i < S * S; i++) L[i] = (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 765;
+  const v = new Float32Array(16 * 8);
+  for (let y = 1; y < S - 1; y++) for (let x = 1; x < S - 1; x++) { const gx = L[y * S + x + 1] - L[y * S + x - 1], gy = L[(y + 1) * S + x] - L[(y - 1) * S + x], m = Math.hypot(gx, gy); if (m < 0.04) continue; const o = Math.floor(((Math.atan2(gy, gx) + Math.PI) % Math.PI) / Math.PI * 8) % 8; v[(Math.floor(y / 12) * 4 + Math.floor(x / 12)) * 8 + o] += m; }
+  let n = 0; for (const a of v) n += a * a; n = Math.sqrt(n) || 1; for (let i = 0; i < v.length; i++) v[i] /= n; return v;
+}
+const sigSim = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
+
+// contrôle 3D : encre posée sur une face de torse non autorisée (pectoral, dos) ou traversante ?
+function torsoSpill(B, t, fix = null) {
+  const rec = Decals.objects.get(t.id); if (!rec) return 0; const img = rec.mesh.material.map && rec.mesh.material.map.image; if (!img) return 0;
+  const S = 128, c = newCanvas(S, S), g = ctx2d(c); g.drawImage(img, 0, 0, S, S); const a = g.getImageData(0, 0, S, S).data;
+  const geo = rec.mesh.geometry, P = geo.attributes.position.array, U = geo.attributes.uv.array, I = geo.index ? geo.index.array : null; const n = I ? I.length / 3 : P.length / 9;
+  let bad = 0, ink = 0; const v = new THREE.Vector3();
+  for (let f = 0; f < n; f++) {
+    const ids = I ? [I[f * 3], I[f * 3 + 1], I[f * 3 + 2]] : [f * 3, f * 3 + 1, f * 3 + 2];
+    const u = (U[ids[0] * 2] + U[ids[1] * 2] + U[ids[2] * 2]) / 3, w = (U[ids[0] * 2 + 1] + U[ids[1] * 2 + 1] + U[ids[2] * 2 + 1]) / 3;
+    if (u < 0 || u > 1 || w < 0 || w > 1) continue; const al = a[(Math.min(S - 1, Math.floor((1 - w) * S)) * S + Math.min(S - 1, Math.floor(u * S))) * 4 + 3]; if (al < 40) continue;
+    ink++; v.set(0, 0, 0); for (const id of ids) v.add(new THREE.Vector3(P[id * 3], P[id * 3 + 1], P[id * 3 + 2])); v.multiplyScalar(1 / 3);
+    const hit = Body.closest(v); if (!hit) continue; const rg = Body.regionName(hit.faceIndex);
+    if (B.limb.regions.includes(rg)) continue;
+    if (!Board.hitOk(B, hit, null, null)) { bad++; if (fix) fix.push(ids.map(id => [U[id * 2], 1 - U[id * 2 + 1]])); }
+  }
+  return ink ? bad / ink : 0;
+}
+
+// recopie d'un tatouage existant : corrélation normalisée de son empreinte sur la planche (entière et par moitiés)
+// avec chaque élément, à plusieurs échelles ; la fenêtre reconnue est effacée de l'élément (indicatif, pas infaillible)
+function removeCopies(B, parts, existing, thr = 0.7, dbg = null) {
+  // gabarits : l'image source de chaque tatouage (droite, telle qu'une référence la montre) et son empreinte déroulée sur la planche
+  const K = 6, cm = 0.01 / B.mpp, temps = [];
+  for (const { t, bm } of existing) {
+    const tw = t.widthCm * cm, th = t.heightCm * cm;
+    if (bm) for (const [cy, ch] of [[0, 1], [0, 0.5], [0.5, 0.5], [0.25, 0.5]]) temps.push({ name: t.name, src: bm, sx: 0, sy: bm.height * cy, sw: bm.width, sh: bm.height * ch, ow: tw, oh: th * ch, thr: ch === 1 ? thr : thr + 0.12 });
+    const c = Board.render(B, [t], 'ink'), a = alphaOf(c); let x0 = BOARD_W, y0 = BOARD_H, x1 = -1, y1 = -1;
+    for (let i = 0; i < a.length; i++) if (a[i] > 30) { const x = i % BOARD_W, y = (i / BOARD_W) | 0; if (x < x0) x0 = x; if (y < y0) y0 = y; if (x > x1) x1 = x; if (y > y1) y1 = y; }
+    if (x1 >= 0) { const w = x1 - x0 + 1, hh = y1 - y0 + 1; for (const [cy, ch] of [[0, 1], [0, 0.5], [0.5, 0.5]]) temps.push({ name: t.name, src: c, sx: x0, sy: y0 + hh * cy, sw: w, sh: hh * ch, ow: w, oh: hh * ch, thr: ch === 1 ? thr : thr + 0.12 }); }
+  }
+  // carte d'encre réduite : alpha × obscurité (une image source sans transparence compte par son trait sombre)
+  const small = (src, sx, sy, sw, sh, w, hh) => { w = Math.max(3, Math.round(w)); hh = Math.max(3, Math.round(hh));
+    // réduction par moitiés successives : un seul drawImage très réduit « saute » les traits fins (crénelage)
+    let cur = src, cx = sx, cy = sy, cw = sw, ch = sh;
+    while (cw > w * 2.2 || ch > hh * 2.2) { const nw = Math.max(w, Math.round(cw / 2)), nh = Math.max(hh, Math.round(ch / 2)), t = newCanvas(nw, nh), tg = ctx2d(t); tg.imageSmoothingQuality = 'high'; tg.drawImage(cur, cx, cy, cw, ch, 0, 0, nw, nh); cur = t; cx = 0; cy = 0; cw = nw; ch = nh; }
+    const c = newCanvas(w, hh), g = ctx2d(c); g.imageSmoothingQuality = 'high'; g.drawImage(cur, cx, cy, cw, ch, 0, 0, w, hh); const d = g.getImageData(0, 0, w, hh).data, v = new Float32Array(w * hh); for (let i = 0; i < v.length; i++) v[i] = d[i * 4 + 3] / 255 * (1 - (d[i * 4] + d[i * 4 + 1] + d[i * 4 + 2]) / 765 * 0.85); return { w, h: hh, v }; };
+  const removed = [];
+  for (const p of parts) {
+    const P0 = small(p.canvas, 0, 0, p.w, p.h, p.w / K, p.h / K), pad = Math.ceil(Math.max(P0.w, P0.h) * 0.3); // marge : une copie peut remplir tout l'élément
+    const P = { w: P0.w + 2 * pad, h: P0.h + 2 * pad, v: new Float32Array((P0.w + 2 * pad) * (P0.h + 2 * pad)) };
+    for (let y = 0; y < P0.h; y++) for (let x = 0; x < P0.w; x++) P.v[(y + pad) * P.w + x + pad] = P0.v[y * P0.w + x];
+    let best = null;
+    for (const T0 of temps) for (const s of [0.6, 0.72, 0.85, 1, 1.15, 1.3, 1.5]) {
+      const T = small(T0.src, T0.sx, T0.sy, T0.sw, T0.sh, T0.ow * s / K, T0.oh * s / K); if (T.w > P.w || T.h > P.h || T.w * T.h < 90) continue;
+      let m = 0; for (const x of T.v) m += x; m /= T.v.length; let sd = 0; const tz = T.v.map(x => { sd += (x - m) ** 2; return x - m; }); sd = Math.sqrt(sd); if (sd < 1e-3) continue;
+      for (let oy = 0; oy + T.h <= P.h; oy += 1) for (let ox = 0; ox + T.w <= P.w; ox += 1) {
+        let pm = 0; for (let y = 0; y < T.h; y++) for (let x = 0; x < T.w; x++) pm += P.v[(oy + y) * P.w + ox + x]; pm /= T.v.length; if (pm < 0.04) continue;
+        let num = 0, ps = 0; for (let y = 0; y < T.h; y++) for (let x = 0; x < T.w; x++) { const q = P.v[(oy + y) * P.w + ox + x] - pm; num += q * tz[y * T.w + x]; ps += q * q; }
+        const ncc = num / (sd * Math.sqrt(ps) + 1e-6); if (!best || ncc - T0.thr > best.ncc - best.thr) best = { ncc, thr: T0.thr, ox, oy, w: T.w, h: T.h, name: T0.name };
+      }
+    }
+    if (dbg) dbg.push(best && { part: p.id, ncc: +best.ncc.toFixed(3), thr: best.thr, w: best.w, h: best.h, name: best.name });
+    if (best && best.ncc > best.thr) {
+      const g = ctx2d(p.canvas); g.save(); g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000';
+      g.fillRect((best.ox - pad - best.w * 0.15) * K, (best.oy - pad - best.h * 0.15) * K, best.w * K * 1.3, best.h * K * 1.3); g.restore();
+      removed.push({ part: p.id, name: best.name, ncc: +best.ncc.toFixed(2) });
+    }
+  }
+  return removed;
+}
+function imageOpaqueRatioCanvas(c) { const d = ctx2d(c).getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 16) if (d[i] > 20) n++; return n; }
+
+// efface de l'image du calque l'encre qui tombe sur des faces interdites (torse de face/dos), puis reconstruit le calque
+async function fixTorso(B, t) {
+  const tris = []; const r0 = torsoSpill(B, t, tris); if (!tris.length) return r0;
+  const bm = await Images.bitmap(t.imageId), c = newCanvas(bm.width, bm.height), g = ctx2d(c); g.drawImage(bm, 0, 0);
+  g.globalCompositeOperation = 'destination-out'; g.fillStyle = '#000'; g.strokeStyle = '#000'; g.lineWidth = Math.max(3, c.width / 120); g.lineJoin = 'round';
+  for (const tr of tris) { g.beginPath(); tr.forEach(([u, v], k) => k ? g.lineTo(u * c.width, v * c.height) : g.moveTo(u * c.width, v * c.height)); g.closePath(); g.fill(); g.stroke(); }
+  t.imageId = await Images.save(await canvasToBlob(c), { w: c.width, h: c.height }); await Decals.build(t);
+  return torsoSpill(B, t);
 }
 
 // ================================================================ Placement simplifié : zones prêtes à l'emploi + gestes
